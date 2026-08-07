@@ -177,11 +177,16 @@ export function renderPlayers(
     return lines.join('\n');
   }
 
-  const nameW = Math.max(12, style.width - 44);
+  const nameW = Math.max(12, style.width - 38);
+
+  // No rate column. Because winners redeem and vanish, essentially everyone
+  // visible in a settled market's book is a loser, so a loss rate here is
+  // pinned at 100% by construction. Printing it would put a number that cannot
+  // vary next to numbers that can, and it would read as a finding.
   lines.push(
     dim(
       padEnd('ADDRESS', 14) + padEnd('NAME', nameW) +
-        padStart('LOST', 6) + padStart('SEEN', 6) + padStart('RATE', 6) + padStart('SIZE', 9),
+        padStart('WIPED IN', 10) + padStart('OF', 5) + padStart('TOKENS', 9),
       style,
     ),
   );
@@ -190,19 +195,17 @@ export function renderPlayers(
     lines.push(
       padEnd(p.address.slice(0, 12), 14) +
         padEnd(p.name ?? dim('(anon)', style), nameW) +
-        padStart(String(p.losses), 6) +
-        padStart(String(p.appearances), 6) +
-        padStart(pct(p.lossRate), 6) +
+        padStart(String(p.losses), 10) +
+        padStart(String(p.appearances), 5) +
         padStart(count(p.size), 9),
     );
   }
 
   lines.push(rule(style));
-  // Losses, not wins, and the reason is worth stating where it will be read.
   lines.push(
     dim('losses, not wins: winners redeem and leave the book, losers keep worthless tokens.', style),
   );
-  lines.push(dim('someone has to lose a market. repeatedly is a question, not a finding.', style));
+  lines.push(dim('someone has to lose every market. repeatedly is a question, not a finding.', style));
   if (meta.marketsFailed > 0) {
     lines.push(dim(`${meta.marketsFailed} markets could not be read, tallies are incomplete.`, style));
   }
