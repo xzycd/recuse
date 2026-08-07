@@ -9,6 +9,7 @@
  */
 
 import { getJson, num } from './http.js';
+import { safeAddress, safeHash, safeText } from '../core/safe.js';
 import type { Holder, Market, Side } from '../types.js';
 
 const BASE = 'https://data-api.polymarket.com';
@@ -32,9 +33,15 @@ interface RawHolderGroup {
  * The generated fallback looks like `0xAbC…-1730864521381`, an address with a
  * timestamp glued on. That is not a name, it is the absence of one, so it is
  * dropped rather than displayed as if the account had identified itself.
+ *
+ * This is the single most hostile field the tool reads. It is chosen freely by
+ * the account, and the tool prints it in a table making claims about that same
+ * account. Left raw, a wallet could set a name containing a screen clear and
+ * forge every row above its own. `safeText` strips anything the terminal would
+ * act on, and the length cap keeps one row from pushing the rest off screen.
  */
 export function displayName(raw: RawHolder): string | undefined {
-  const candidate = raw.name?.trim() || raw.pseudonym?.trim();
+  const candidate = safeText(raw.name, 40) || safeText(raw.pseudonym, 40);
   if (!candidate) return undefined;
   if (/^0x[0-9a-fA-F]{40}-\d+$/.test(candidate)) return undefined;
   return candidate;
@@ -56,9 +63,14 @@ export function sideForIndex(market: Market, index: number): Side {
  * keeps that meaning rather than quietly reinterpreting it.
  */
 export async function fetchHolders(market: Market, limit = 100): Promise<Holder[]> {
-  if (!market.conditionId) return [];
+  // Re-checked rather than assumed. This value is interpolated into a URL, and
+  // the guarantee that it is a 32 byte hash belongs next to the interpolation,
+  // not three modules away in whatever produced the Market.
+  const condition = safeHash(market.conditionId);
+  if (!condition) return [];
 
-  const url = `${BASE}/holders?market=${market.conditionId}&limit=${limit}`;
+  const size = Math.min(Math.max(1, Math.floor(limit)), 500);
+  const url = `${BASE}/holders?market=${condition}&limit=${size}`;
   const groups = await getJson<RawHolderGroup[]>(url);
   if (!Array.isArray(groups)) return [];
 
@@ -66,7 +78,7 @@ export async function fetchHolders(market: Market, limit = 100): Promise<Holder[
 
   for (const group of groups) {
     for (const raw of group.holders ?? []) {
-      const address = raw.proxyWallet?.toLowerCase();
+      const address = safeAddress(raw.proxyWallet);
       if (!address) continue;
 
       const index = num(raw.outcomeIndex, 0);

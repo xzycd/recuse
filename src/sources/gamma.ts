@@ -9,6 +9,7 @@
 
 import { getJson, num, parseEmbeddedJson } from './http.js';
 import { normaliseSteps } from '../core/dispute.js';
+import { safeHash, safeText, safeTokenId } from '../core/safe.js';
 import type { Market } from '../types.js';
 
 const BASE = 'https://gamma-api.polymarket.com';
@@ -41,28 +42,40 @@ interface RawMarket {
   outcomePrices?: unknown;
 }
 
-/** Map one raw record onto our shape, tolerating missing fields. */
+/**
+ * Map one raw record onto our shape, tolerating missing fields.
+ *
+ * Every string that came off the wire goes through `safeText` here, on the way
+ * in. Market questions and resolution sources are free text that ends up on a
+ * terminal, and a question containing an escape sequence would let whoever
+ * wrote it redraw the table it appears in. Sanitising at ingest also means the
+ * --json output is clean, which a render-time filter would not achieve.
+ */
 export function toMarket(raw: RawMarket): Market {
   return {
-    conditionId: raw.conditionId ?? '',
-    questionId: raw.questionID,
-    slug: raw.slug ?? '',
-    question: raw.question ?? '(untitled market)',
+    conditionId: safeHash(raw.conditionId) ?? '',
+    questionId: safeHash(raw.questionID),
+    slug: safeText(raw.slug, 120),
+    question: safeText(raw.question) || '(untitled market)',
     volume: num(raw.volumeNum ?? raw.volume),
     liquidity: num(raw.liquidityNum ?? raw.liquidity),
-    resolvedBy: raw.resolvedBy,
+    resolvedBy: raw.resolvedBy?.toLowerCase(),
     umaBond: num(raw.umaBond, 0) || undefined,
     umaReward: num(raw.umaReward, 0) || undefined,
-    resolutionSource: raw.resolutionSource || undefined,
-    endDate: raw.endDate,
-    umaEndDate: raw.umaEndDate,
+    resolutionSource: safeText(raw.resolutionSource) || undefined,
+    endDate: safeText(raw.endDate, 40) || undefined,
+    umaEndDate: safeText(raw.umaEndDate, 40) || undefined,
     closed: raw.closed === true,
     active: raw.active !== false,
     negRisk: raw.negRisk === true,
     resolutionSteps: normaliseSteps(parseEmbeddedJson<unknown[]>(raw.umaResolutionStatuses, [])),
-    tokenIds: parseEmbeddedJson<string[]>(raw.clobTokenIds, []),
-    outcomes: parseEmbeddedJson<string[]>(raw.outcomes, []),
-    outcomePrices: parseEmbeddedJson<string[]>(raw.outcomePrices, []).map((p) => num(p)),
+    // Token ids are interpolated into a GraphQL query downstream, so a value
+    // that is not a plain decimal integer is dropped rather than carried.
+    tokenIds: parseEmbeddedJson<unknown[]>(raw.clobTokenIds, [])
+      .map((t) => safeTokenId(t))
+      .filter((t): t is string => t !== undefined),
+    outcomes: parseEmbeddedJson<unknown[]>(raw.outcomes, []).map((o) => safeText(o, 60)),
+    outcomePrices: parseEmbeddedJson<unknown[]>(raw.outcomePrices, []).map((p) => num(p)),
   };
 }
 

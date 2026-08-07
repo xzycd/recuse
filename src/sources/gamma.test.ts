@@ -4,7 +4,7 @@ import { matchesRequest, toMarket } from './gamma.js';
 describe('toMarket', () => {
   it('decodes the fields Gamma ships as JSON inside a string', () => {
     const m = toMarket({
-      conditionId: '0xabc',
+      conditionId: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       slug: 'x',
       question: 'q',
       outcomes: '["Yes", "No"]',
@@ -26,7 +26,7 @@ describe('toMarket', () => {
   });
 
   it('does not let one malformed field take down the record', () => {
-    const m = toMarket({ conditionId: '0xabc', outcomes: '["Yes", "No"', volumeNum: '1200' });
+    const m = toMarket({ conditionId: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', outcomes: '["Yes", "No"', volumeNum: '1200' });
     expect(m.outcomes).toEqual([]);
     expect(m.volume).toBe(1200);
   });
@@ -38,11 +38,11 @@ describe('toMarket', () => {
 });
 
 describe('matchesRequest', () => {
-  const market = toMarket({ conditionId: '0xAAA', slug: 'zelenskyy-suit' });
+  const market = toMarket({ conditionId: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', slug: 'zelenskyy-suit' });
 
   it('matches on condition id regardless of case', () => {
-    expect(matchesRequest(market, '0xaaa')).toBe(true);
-    expect(matchesRequest(market, '0xAAA')).toBe(true);
+    expect(matchesRequest(market, '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toBe(true);
+    expect(matchesRequest(market, '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')).toBe(true);
   });
 
   it('matches on slug', () => {
@@ -52,6 +52,6 @@ describe('matchesRequest', () => {
   it('rejects a market Gamma returned after silently dropping the filter', () => {
     // The real failure: asking for the $242M Zelenskyy market and being handed
     // "Xi Jinping out before 2027?" with no error anywhere in the response.
-    expect(matchesRequest(market, '0xbbb')).toBe(false);
+    expect(matchesRequest(market, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toBe(false);
   });
 });

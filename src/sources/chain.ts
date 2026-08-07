@@ -18,6 +18,8 @@
  * showing a partial picture that looks complete.
  */
 
+import { redactMessage, safeEndpoint } from '../core/safe.js';
+import { readJsonCapped } from './http.js';
 import type { Actor } from '../types.js';
 
 /**
@@ -122,20 +124,38 @@ export class Chain {
           'at 10-50 blocks, which is too small to read the oracle. Any provider free tier works.',
       );
     }
+
+    // Checked once, here, rather than at every call site. Without it this is an
+    // arbitrary URL that the tool POSTs to and reads a JSON body back from, and
+    // a scheme like file: would turn a config value into a local file read.
+    try {
+      safeEndpoint(this.url);
+    } catch (err) {
+      throw new ChainUnavailable(`RECUSE_RPC_URL rejected: ${(err as Error).message}`);
+    }
   }
 
   private async call<T>(method: string, params: unknown[]): Promise<T> {
-    const res = await fetch(this.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: ++this.id, method, params }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(this.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: ++this.id, method, params }),
+      });
+    } catch (err) {
+      // The endpoint almost always carries an API key. Node puts the request
+      // URL into some network error messages, and the natural next step after
+      // an error is pasting it into an issue.
+      throw new Error(`rpc request failed: ${redactMessage((err as Error).message)}`);
+    }
+
     if (!res.ok) throw new Error(`rpc ${res.status} ${res.statusText}`);
 
-    const body = (await res.json()) as { result?: T; error?: { message: string } };
+    const body = await readJsonCapped<{ result?: T; error?: { message: string } }>(res);
     // Surfaced, never swallowed. Treating an error as an empty result is how a
     // scan reports a confident zero over ground it never covered.
-    if (body.error) throw new Error(`rpc error: ${body.error.message}`);
+    if (body.error) throw new Error(`rpc error: ${redactMessage(body.error.message)}`);
     if (body.result === undefined) throw new Error('rpc returned no result');
 
     return body.result;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseArgs } from './cli.js';
+import { parseArgs, version } from './cli.js';
 
 describe('parseArgs', () => {
   it('defaults to the radar', () => {
@@ -38,5 +38,35 @@ describe('parseArgs', () => {
   it('treats -h and --help alike', () => {
     expect(parseArgs(['-h']).help).toBe(true);
     expect(parseArgs(['--help']).help).toBe(true);
+  });
+
+  it('reads a theme name and the list request', () => {
+    expect(parseArgs(['--theme', 'ember']).theme).toBe('ember');
+    expect(parseArgs(['--theme', 'list']).theme).toBe('list');
+  });
+
+  it('draws the banner unless told not to', () => {
+    expect(parseArgs([]).logo).toBe(true);
+    expect(parseArgs(['--no-logo']).logo).toBe(false);
+  });
+
+  it('keeps the winner rebuild off the radar unless asked', () => {
+    // It costs a subgraph round trip per row, so the radar does not pay for it
+    // by default. `recuse market` does, because there it is one request.
+    expect(parseArgs([]).winners).toBe(false);
+    expect(parseArgs(['--winners']).winners).toBe(true);
+  });
+
+  it('takes winners as a command with a target', () => {
+    const a = parseArgs(['winners', 'will-zelenskyy-wear-a-suit-before-july']);
+    expect(a).toMatchObject({ command: 'winners', target: 'will-zelenskyy-wear-a-suit-before-july' });
+  });
+});
+
+describe('version', () => {
+  it('reads the installed version rather than a copy that can drift', () => {
+    // The update check compares against this. A hardcoded string here would
+    // eventually tell someone they are current when they are not.
+    expect(version()).toMatch(/^[0-9]+\.[0-9]+\.[0-9]+/);
   });
 });
