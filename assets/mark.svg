@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="recuse">
+  <rect width="512" height="512" rx="96" fill="#0e0e11"/>
+
+  <clipPath id="lens-icon"><circle cx="190" cy="256" r="132"/></clipPath>
+  <circle cx="190" cy="256" r="132" fill="none" stroke="#6f6a65" stroke-width="3"/>
+  <circle cx="322" cy="256" r="132" fill="none" stroke="#6f6a65" stroke-width="3"/>
+  <circle cx="322" cy="256" r="132" fill="#e0533d" clip-path="url(#lens-icon)"/>
+</svg>
