@@ -9,12 +9,21 @@
 import { readFileSync } from 'node:fs';
 import { assess, assessAll, tallyRepeatPlayers } from './core/assess.js';
 import { checkForUpdate, updateNotice } from './core/update.js';
+import { checkWebhook } from './core/notify.js';
 import { redactMessage } from './core/safe.js';
+import {
+  addToWatchlist, readEvents, readSeen, readWatchlist, removeFromWatchlist,
+} from './core/store.js';
+import { runLoop, runPass, type PassResult } from './core/watcher.js';
+import type { EventKind } from './core/watch.js';
 import { fetchContestedMarkets, fetchMarket, fetchMarkets } from './sources/gamma.js';
 import { detectStyle } from './ui/format.js';
 import { splash } from './ui/logo.js';
 import { startSpinner } from './ui/loading.js';
-import { renderMarket, renderPlayers, renderRadar, renderThemes, renderWinners } from './ui/plain.js';
+import {
+  renderEvent, renderMarket, renderPassSummary, renderPlayers, renderRadar, renderThemes,
+  renderWatchlist, renderWatchStart, renderWinners,
+} from './ui/plain.js';
 import { colourise, THEMES, themeNames } from './ui/theme.js';
 
 /**
@@ -39,6 +48,14 @@ const USAGE = `usage
   recuse update               check whether a newer version was published
   recuse --help
 
+watching
+  recuse watch                poll for resolutions that move, until stopped
+  recuse watch --once         one pass and exit, for cron or a systemd timer
+  recuse watch add <id|slug>  put a market on the watchlist
+  recuse watch rm <id|slug>   take one off
+  recuse watch list           show the watchlist and what was last seen
+  recuse events               the log of everything that moved
+
 options
   --json            machine-readable output
   --plain           force the plain renderer
@@ -50,18 +67,29 @@ options
   --no-color        monochrome
   --no-logo         skip the banner
 
+watch options
+  --once            a single pass instead of a loop
+  --interval <sec>  seconds between passes (default 300, minimum 30)
+  --discover        also report disputes on markets you did not name
+  --min-pool <n>    ignore anything under this much volume
+  --only <kinds>    comma separated: disputed,proposed,resolved,reset,settled,appeared,rewritten
+  --webhook <url>   POST each event as JSON. works with telegram, discord, slack
+  --no-detail       skip the holder lookup that enriches each event
+
 environment
   RECUSE_THEME      default theme
   RECUSE_RPC_URL    a Polygon endpoint that serves eth_getLogs ranges. without
                     it, proposer and disputer identities are not read. the free
                     public endpoints cap at 10-50 blocks and cannot be used.
-  RECUSE_HOME       where the update cache lives (default ~/.recuse)
+  RECUSE_HOME       where the watchlist, state and event log live (default ~/.recuse)
   RECUSE_NO_UPDATE_CHECK  skip the version check entirely
   NO_COLOR          monochrome
 `;
 
 interface Args {
   command: string;
+  /** `watch add`, `watch rm`, `watch list`. Empty for every other command. */
+  sub?: string;
   target?: string;
   json: boolean;
   plain: boolean;
@@ -73,12 +101,23 @@ interface Args {
   logo: boolean;
   colour?: boolean;
   help: boolean;
+  once: boolean;
+  intervalMs: number;
+  discover: boolean;
+  minPool?: number;
+  only?: string;
+  webhook?: string;
+  detail: boolean;
 }
+
+/** Anything under this hammers Gamma for no benefit; disputes do not move in seconds. */
+const MIN_INTERVAL_MS = 30_000;
 
 export function parseArgs(argv: string[]): Args {
   const args: Args = {
     command: 'radar', json: false, plain: false, limit: 25, scan: 600,
     all: false, winners: false, logo: true, help: false,
+    once: false, intervalMs: 300_000, discover: false, detail: true,
   };
   const rest: string[] = [];
 
@@ -91,15 +130,40 @@ export function parseArgs(argv: string[]): Args {
     else if (a === '--no-logo') args.logo = false;
     else if (a === '--no-color' || a === '--no-colour') args.colour = false;
     else if (a === '--help' || a === '-h') args.help = true;
+    else if (a === '--once') args.once = true;
+    else if (a === '--discover') args.discover = true;
+    else if (a === '--no-detail') args.detail = false;
     else if (a === '--limit') args.limit = Number(argv[++i]) || args.limit;
     else if (a === '--scan') args.scan = Number(argv[++i]) || args.scan;
+    else if (a === '--min-pool') args.minPool = Number(argv[++i]) || args.minPool;
+    else if (a === '--only') args.only = argv[++i];
+    else if (a === '--webhook') args.webhook = argv[++i];
     else if (a === '--theme') args.theme = argv[++i];
+    else if (a === '--interval') {
+      const seconds = Number(argv[++i]);
+      // Clamped rather than rejected. Someone asking for five seconds wants it
+      // responsive, and the right answer is to give them the fastest polite
+      // rate rather than an error.
+      args.intervalMs = Number.isFinite(seconds) && seconds > 0
+        ? Math.max(MIN_INTERVAL_MS, seconds * 1000)
+        : args.intervalMs;
+    }
     else if (a?.startsWith('-')) throw new Error(`unknown option: ${a}`);
     else if (a) rest.push(a);
   }
 
   if (rest[0]) args.command = rest[0];
-  if (rest[1]) args.target = rest[1];
+
+  // `watch` is the only command with a subcommand, so the second positional
+  // means different things depending on the first. Everywhere else it is the
+  // market, and treating `watch add <slug>` as `command=watch target=add` would
+  // silently look up a market called "add".
+  if (args.command === 'watch') {
+    if (rest[1]) args.sub = rest[1];
+    if (rest[2]) args.target = rest[2];
+  } else if (rest[1]) {
+    args.target = rest[1];
+  }
 
   return args;
 }
@@ -110,6 +174,11 @@ function emit(text: string): void {
 
 function emitJson(value: unknown): void {
   emit(JSON.stringify(value, null, 2));
+}
+
+/** Dim, for the CLI's own asides. Colour resolves through the active theme. */
+function dimly(text: string, style: ReturnType<typeof detectStyle>): string {
+  return colourise(text, style.theme.dim, style.depth);
 }
 
 /**
@@ -343,6 +412,166 @@ async function runUpdate(args: Args): Promise<number> {
   return 0;
 }
 
+/** `watch add`, `watch rm`, `watch list`. Everything that is not the loop. */
+async function runWatchAdmin(args: Args): Promise<number> {
+  const style = detectStyle({ colour: args.colour, theme: args.theme });
+
+  if (args.sub === 'add' || args.sub === 'rm' || args.sub === 'remove') {
+    if (!args.target) {
+      process.stderr.write(`recuse watch ${args.sub}: needs a condition id or slug\n`);
+      return 2;
+    }
+
+    const adding = args.sub === 'add';
+    const result = adding
+      ? await addToWatchlist(args.target)
+      : await removeFromWatchlist(args.target);
+    const changed = 'added' in result ? result.added : result.removed;
+
+    if (args.json) {
+      emitJson({ action: args.sub, target: args.target, changed, watching: result.list.markets });
+      return 0;
+    }
+
+    const verb = changed ? (adding ? 'watching' : 'dropped') : (adding ? 'already watching' : 'was not watching');
+    emit(`${verb} ${args.target}`);
+    emit(dimly(`${result.list.markets.length} on the watchlist`, style));
+    return 0;
+  }
+
+  // `watch list`, and the default when a subcommand is not recognised as an
+  // action, because showing the watchlist is the harmless reading of it.
+  const [list, state] = await Promise.all([readWatchlist(), readSeen()]);
+  const byId = new Map(Object.values(state.markets).map((s) => [s.conditionId, s]));
+  const bySlug = new Map(Object.values(state.markets).map((s) => [s.slug, s]));
+
+  const entries = list.markets.map((target) => {
+    const seen = byId.get(target.toLowerCase()) ?? bySlug.get(target);
+    return seen ? { target, seen } : { target };
+  });
+
+  if (args.json) {
+    emitJson({ watching: list.markets, baselineAt: state.baselineAt, entries });
+    return 0;
+  }
+
+  emit(renderWatchlist(entries, style));
+  return 0;
+}
+
+/** The loop, or one pass of it. */
+async function runWatch(args: Args): Promise<number> {
+  if (args.sub && args.sub !== 'run') return runWatchAdmin(args);
+
+  const style = detectStyle({ colour: args.colour, theme: args.theme });
+
+  // Checked before the first pass rather than on the first event. A watcher
+  // that runs all night and only discovers its webhook is malformed when
+  // something finally happens has failed at the one job it had.
+  if (args.webhook) {
+    try {
+      checkWebhook(args.webhook);
+    } catch (err) {
+      process.stderr.write(`--webhook rejected: ${(err as Error).message}\n`);
+      return 2;
+    }
+  }
+
+  const kinds = args.only
+    ? new Set(args.only.split(',').map((k) => k.trim()).filter(Boolean) as EventKind[])
+    : undefined;
+
+  const list = await readWatchlist();
+  if (list.markets.length === 0 && !args.discover) {
+    process.stderr.write(
+      'nothing to watch. add a market with `recuse watch add <id-or-slug>`, ' +
+        'or pass --discover to watch for disputes on markets you did not name.\n',
+    );
+    return 2;
+  }
+
+  const options = {
+    discover: args.discover,
+    scan: args.scan,
+    minPool: args.minPool,
+    kinds,
+    detail: args.detail,
+    webhook: args.webhook,
+  };
+
+  const report = (result: PassResult) => {
+    if (args.json) {
+      // One event per line, so `recuse watch --json | while read` works and a
+      // consumer never has to wait for the process to end.
+      for (const event of result.events) emit(JSON.stringify(event));
+      return;
+    }
+    for (const event of result.events) emit(renderEvent(event, style));
+    const summary = renderPassSummary(result, style);
+    if (summary) emit(summary);
+  };
+
+  if (args.once) {
+    report(await runPass(options));
+    return 0;
+  }
+
+  if (!args.json) {
+    showSplash(args, style);
+    emit(
+      renderWatchStart(
+        {
+          watching: list.markets.length,
+          discover: args.discover,
+          scan: args.scan,
+          intervalMs: args.intervalMs,
+          webhook: Boolean(args.webhook),
+        },
+        style,
+      ),
+    );
+  }
+
+  // Ctrl-c resolves this, and the loop races it against its own sleep, so a
+  // stop during a five minute wait exits now rather than in five minutes.
+  let release: () => void = () => {};
+  const stop = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const onSignal = () => {
+    release();
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+
+  await runLoop({ ...options, intervalMs: args.intervalMs, onPass: report, stop });
+
+  if (!args.json) emit(dimly('stopped', style));
+  return 0;
+}
+
+async function runEvents(args: Args): Promise<number> {
+  const style = detectStyle({ colour: args.colour, theme: args.theme });
+  const { events, skipped } = await readEvents(args.limit);
+
+  if (args.json) {
+    emitJson({ events, skipped });
+    return 0;
+  }
+
+  if (events.length === 0) {
+    emit(dimly('no events recorded yet. run `recuse watch`.', style));
+    return 0;
+  }
+
+  for (const event of events) emit(renderEvent(event, style));
+  if (skipped > 0) {
+    // A partial last line from a process killed mid-append. Counted, not hidden.
+    emit(dimly(`${skipped} unreadable lines in the log`, style));
+  }
+  return 0;
+}
+
 function runThemeList(args: Args): number {
   const style = detectStyle({ colour: args.colour });
   const list = Object.values(THEMES).map((t) => ({ name: t.name, blurb: t.blurb, ramp: t.ramp }));
@@ -386,6 +615,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         return await runWinners(args);
       case 'players':
         return await runPlayers(args);
+      case 'watch':
+        return await runWatch(args);
+      case 'events':
+        return await runEvents(args);
       case 'update':
         return await runUpdate(args);
       default:

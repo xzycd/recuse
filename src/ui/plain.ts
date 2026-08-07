@@ -17,6 +17,7 @@ import {
 import { formatSteps } from '../core/dispute.js';
 import type { Style } from './format.js';
 import type { Assessment, Concentration, RepeatPlayer, Winner } from '../types.js';
+import type { WatchEvent } from '../core/watch.js';
 
 /**
  * Which optional columns fit.
@@ -347,5 +348,123 @@ export function renderThemes(current: string, style: Style, themes: {
 
   lines.push(rule(style));
   lines.push(dim('recuse --theme <name>, or set RECUSE_THEME', style));
+  return lines.join('\n');
+}
+
+/**
+ * One event, one line.
+ *
+ * A watcher runs for days into a scrollback buffer, so this is shaped like a log
+ * line rather than like a card: fixed columns, timestamp first, greppable. The
+ * only thing coloured is the round count, same ramp as everywhere else.
+ */
+export function renderEvent(event: WatchEvent, style: Style): string {
+  const time = event.at.slice(11, 19);
+  const rounds = event.rounds > 0 ? `${event.rounds}×` : '·';
+
+  const head =
+    dim(time, style) +
+    ' ' +
+    padEnd(event.kind, 10) +
+    paintRounds(event.rounds, padStart(rounds, 4), style) +
+    padStart(money(event.pool), 9) +
+    '  ';
+
+  // The question takes whatever is left. It is the only part anyone reads first,
+  // so it is never the thing that gets dropped.
+  const room = Math.max(20, style.width - 34);
+  const line = head + clip(event.question, room);
+
+  const c = event.concentration;
+  if (!c) return line;
+
+  // The share never travels without its terms, on this surface too.
+  const side = c.meaning === 'wiped' ? 'losing' : c.meaning === 'redeemed' ? 'winning' : 'leading';
+  return (
+    line +
+    '\n' +
+    dim(
+      `${' '.repeat(9)}${side} side ${c.side}: ${meter(c.topShare)} ${pct(c.topShare)} ` +
+        `(${c.topN} of ${c.holderCount}, ${count(c.totalSize)} tokens)`,
+      style,
+    )
+  );
+}
+
+/** The header the watcher prints once, before it goes quiet. */
+export function renderWatchStart(
+  meta: { watching: number; discover: boolean; scan: number; intervalMs: number; webhook: boolean },
+  style: Style,
+): string {
+  const every = meta.intervalMs >= 60_000
+    ? `${Math.round(meta.intervalMs / 60_000)}m`
+    : `${Math.round(meta.intervalMs / 1000)}s`;
+
+  const parts = [
+    `${meta.watching} on the watchlist`,
+    meta.discover ? `discovery across ${meta.scan} markets` : 'watchlist only',
+    `every ${every}`,
+  ];
+  if (meta.webhook) parts.push('webhook on');
+
+  return bold('recuse watch', style) + dim(` · ${parts.join(' · ')}`, style);
+}
+
+/** What a pass did, including when it did nothing. Quiet is not the same as fine. */
+export function renderPassSummary(
+  result: {
+    polled: number; failed: string[]; baseline: boolean; suppressed: number; undelivered: number;
+    events: unknown[];
+  },
+  style: Style,
+): string | undefined {
+  const notes: string[] = [];
+
+  if (result.baseline) {
+    // The first pass has no baseline to compare against, so it reports nothing
+    // and says so rather than looking like a quiet night.
+    notes.push(
+      `baseline recorded for ${result.polled} market${result.polled === 1 ? '' : 's'}, nothing reported`,
+    );
+  }
+  if (result.failed.length > 0) {
+    notes.push(`${result.failed.length} could not be read: ${result.failed.slice(0, 3).join(', ')}`);
+  }
+  if (result.suppressed > 0) {
+    notes.push(`${result.suppressed} events below your filters`);
+  }
+  if (result.undelivered > 0) {
+    notes.push(`${result.undelivered} not delivered to the webhook`);
+  }
+
+  return notes.length > 0 ? dim(`  ${notes.join(' · ')}`, style) : undefined;
+}
+
+/** The stored watchlist, with what we last saw of each entry. */
+export function renderWatchlist(
+  entries: { target: string; seen?: { question: string; steps: string[]; at: string } }[],
+  style: Style,
+): string {
+  const lines = [bold('watching', style), rule(style)];
+
+  if (entries.length === 0) {
+    lines.push(dim('nothing yet. recuse watch add <id-or-slug>', style));
+    return lines.join('\n');
+  }
+
+  for (const entry of entries) {
+    lines.push(padEnd(entry.target, Math.min(44, style.width - 30)));
+    if (entry.seen) {
+      lines.push(
+        dim(`  ${clip(entry.seen.question, style.width - 4)}`, style),
+      );
+      lines.push(
+        dim(`  ${entry.seen.steps.join('→') || 'no lifecycle yet'} · seen ${entry.seen.at.slice(0, 16)}`, style),
+      );
+    } else {
+      lines.push(dim('  not polled yet', style));
+    }
+  }
+
   return lines.join('\n');
 }

@@ -63,6 +63,58 @@ describe('parseArgs', () => {
   });
 });
 
+describe('parseArgs, watch', () => {
+  it('reads a subcommand and its target, not the subcommand as a market', () => {
+    // Everywhere else the second positional is the market. Under watch it is
+    // the action, and getting this wrong means looking up a market called "add".
+    const a = parseArgs(['watch', 'add', 'zelenskyy-suit']);
+    expect(a).toMatchObject({ command: 'watch', sub: 'add', target: 'zelenskyy-suit' });
+  });
+
+  it('leaves sub empty for the bare loop', () => {
+    expect(parseArgs(['watch']).sub).toBeUndefined();
+    expect(parseArgs(['watch', '--once']).sub).toBeUndefined();
+  });
+
+  it('still treats the second positional as a market for other commands', () => {
+    expect(parseArgs(['market', 'add']).target).toBe('add');
+    expect(parseArgs(['market', 'add']).sub).toBeUndefined();
+  });
+
+  it('defaults to a five minute loop with detail on', () => {
+    const a = parseArgs(['watch']);
+    expect(a.intervalMs).toBe(300_000);
+    expect(a.once).toBe(false);
+    expect(a.discover).toBe(false);
+    expect(a.detail).toBe(true);
+  });
+
+  it('takes the interval in seconds', () => {
+    expect(parseArgs(['watch', '--interval', '600']).intervalMs).toBe(600_000);
+  });
+
+  it('clamps a too-eager interval rather than rejecting it', () => {
+    // Someone asking for five seconds wants it responsive. Giving them the
+    // fastest polite rate serves that better than an error does, and disputes
+    // do not move in seconds anyway.
+    expect(parseArgs(['watch', '--interval', '5']).intervalMs).toBe(30_000);
+    expect(parseArgs(['watch', '--interval', '0']).intervalMs).toBe(300_000);
+    expect(parseArgs(['watch', '--interval', 'soon']).intervalMs).toBe(300_000);
+  });
+
+  it('reads the filters', () => {
+    const a = parseArgs(['watch', '--min-pool', '1000000', '--only', 'disputed,resolved']);
+    expect(a.minPool).toBe(1_000_000);
+    expect(a.only).toBe('disputed,resolved');
+  });
+
+  it('reads a webhook and lets detail be turned off', () => {
+    const a = parseArgs(['watch', '--webhook', 'https://example.com/h', '--no-detail']);
+    expect(a.webhook).toBe('https://example.com/h');
+    expect(a.detail).toBe(false);
+  });
+});
+
 describe('version', () => {
   it('reads the installed version rather than a copy that can drift', () => {
     // The update check compares against this. A hardcoded string here would
