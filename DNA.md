@@ -36,6 +36,8 @@ No em dashes in prose. No emoji anywhere, including the TUI, where they break co
 
 **Never print a credential.** `RECUSE_RPC_URL` usually holds an API key, and the natural next step after an error is pasting it into an issue. Every error that reaches a user goes through the redactor first.
 
+**A watcher's first pass reports nothing.** There is no baseline to compare against, and firing on everything the first time it runs is how a tool teaches someone to ignore it. Say how many markets were recorded instead.
+
 **Never install anything.** The tool checks for a new version and prints the command. A CLI that updates itself runs whatever is at that name on the registry the next time the name changes hands.
 
 ## Interface rules

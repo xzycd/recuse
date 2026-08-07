@@ -43,6 +43,67 @@ Useful flags: `--scan <n>` for how many markets to examine, `--limit <n>` for ho
 
 Five themes. `recuse --theme list` shows them, `RECUSE_THEME` sets a default. Inside the table only one thing is ever coloured, the dispute round count, because a table where four columns are coloured teaches you to stop reading colour.
 
+## Watching
+
+There were more than 1,150 disputed markets in 2026. A dispute is an unhedgeable binary risk on money you already committed, and it arrives without warning. `recuse watch` polls for resolutions that move and tells you when one does.
+
+```sh
+recuse watch add will-zelenskyy-wear-a-suit-before-july
+recuse watch                    # poll until stopped
+recuse watch --once             # one pass, for cron or a systemd timer
+recuse events                   # everything that has moved so far
+```
+
+```
+03:09:34 proposed    4×  $242.2M  Will Zelenskyy wear a suit before July?
+03:09:34 disputed    5×  $242.2M  Will Zelenskyy wear a suit before July?
+         losing side YES: ●○○ 33% (5 of 100, 52.1M tokens)
+```
+
+One line per event, so the log stays greppable after a week of running. Each event carries who held what, looked up once per market rather than once per event.
+
+`--discover` also reports disputes on markets you never named, which is how you find out about one before you had an opinion about it. `--min-pool` and `--only disputed` cut the noise, and anything they cut is counted on screen rather than silently dropped.
+
+Three behaviours worth knowing, all of them deliberate:
+
+**The first pass reports nothing.** There is no baseline to compare against, and firing on everything the first time it runs is how a tool teaches you to ignore it. It says how many markets it recorded instead.
+
+**A market it could not read produces no event.** Not-read and nothing-happened are different statements, and it counts the first separately rather than treating an unreachable market as a quiet one.
+
+**A lifecycle that changes in any way other than growing is reported as `rewritten`.** Settled history moving under us is itself the news, and silently accepting the new version would hide exactly the thing this tool exists to notice.
+
+State lives in `~/.recuse`: the watchlist, the last snapshot of each market, and `events.jsonl`, which is append only and one JSON object per line.
+
+### Sending it somewhere
+
+```sh
+recuse watch --webhook https://api.telegram.org/bot<token>/sendMessage
+```
+
+POSTs each event as JSON. Telegram, Discord and Slack all take one. A webhook that is down is counted and never stops the loop, because the event is already on stdout and in the log by then.
+
+There is no `--exec` and nothing is ever spawned. `recuse watch --json` emits one event per line as they happen, so
+
+```sh
+recuse watch --json | while read -r e; do notify-send "$e"; done
+```
+
+does the same job without this program ever touching `child_process`.
+
+### Leaving it running
+
+`--once` exits after a single pass, so the scheduler already on the machine can own the loop rather than this process:
+
+```cron
+*/10 * * * * recuse watch --once --webhook https://... >> ~/recuse.log 2>&1
+```
+
+`RECUSE_HOME` moves the state, which is how you run more than one watchlist:
+
+```sh
+RECUSE_HOME=~/.recuse-iran recuse watch --once
+```
+
 ## The half of a settled market you cannot normally see
 
 This is the part that took live data to find, and it is the reason the tool exists in this shape.
@@ -132,7 +193,7 @@ The subgraph will not sort positions by size without a lower bound on that size.
 
 ```sh
 npm install
-npm test        # 149 tests, no network
+npm test        # 192 tests, no network
 npm run build
 ```
 

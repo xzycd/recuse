@@ -16,8 +16,12 @@ src/
     safe.ts       making remote text safe to put on a terminal. pure
     dispute.ts    parses umaResolutionStatuses into rounds, phase, clock
     capture.ts    which side is measurable, concentration, repeat tallies
+    watch.ts      what counts as a resolution moving. pure
     update.ts     version check. checks and prints, never installs
     assess.ts     assembles one answer from every source (does I/O)
+    watcher.ts    one poll pass, and the loop (does I/O)
+    store.ts      the watchlist, the last snapshot, the event log, under ~/.recuse
+    notify.ts     webhook delivery. the only outbound sink
   ui/
     theme.ts      five themes, colour depth detection, hex to escape
     format.ts     numbers, widths, NO_COLOR and non-TTY detection
@@ -30,12 +34,12 @@ tools/
   logo.mjs    regenerates assets/. run after changing the wordmark
 ```
 
-`core/dispute.ts`, `core/capture.ts` and `core/safe.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
+`core/dispute.ts`, `core/capture.ts`, `core/safe.ts` and `core/watch.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
 
 ## Commands
 
 ```sh
-npm test          # 149 tests, no network, sub-second
+npm test          # 192 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
 node tools/logo.mjs   # regenerate assets/banner.svg and assets/mark.svg
@@ -70,6 +74,16 @@ Every string from an API goes through `core/safe.ts` on the way in, in the sourc
 Sanitising at ingest rather than at render is deliberate: a render-time filter is one forgotten call site from a hole, and it would leave `--json` dirty while the table looked clean.
 
 Errors are scrubbed too. `RECUSE_RPC_URL` usually holds an API key, and the natural next step after an error is pasting it into an issue.
+
+## The watcher
+
+`core/watch.ts` is pure and holds every judgement: first sight is a baseline and reports nothing, a lifecycle that changes other than by growing is `rewritten`, and a market that could not be read produces no event at all. That last one is the same rule as the oracle scan: not-read and nothing-happened are different statements.
+
+State is written to a temporary file and renamed. A watcher runs for days and will eventually be killed mid-write, and a truncated `seen.json` silently re-baselines every market in it.
+
+`events.jsonl` is append only and never rewritten. It is the artefact worth keeping, since the actor record compounds and nobody else is keeping one.
+
+There is deliberately no `--exec` and nothing is spawned. SECURITY.md claims the tool touches no `child_process`, and `recuse watch --json` piped into a shell loop gives anyone the same power. Keeping the claim true is worth more than the flag.
 
 ## Adding a source
 
@@ -109,3 +123,5 @@ A running log. One line each, added when something cost real time to find out an
 - A `players` rate column read 100% on every row, because everyone visible in a settled book is a loser. A number that cannot vary is not a finding.
 - `safeEndpoint` sat written and unwired for an hour and read exactly like a working defence in review. Grep for call sites, not for definitions.
 - `padEnd` counts UTF-16 units, so two emoji in a market question shift every column to their right by one cell.
+- The watcher enriched every event with a holder lookup, so a lifecycle that grew three steps made three identical requests. Memoise per market per pass.
+- Gamma does not always append a `resolved` step when a market lands, so settlement has to be detected from prices as well as from the lifecycle.

@@ -104,3 +104,38 @@ the banner, spinner, rules and headings, where nothing is being read off the col
 
 The banner and spinner are both suppressed outside a real terminal. The spinner is
 on stderr specifically so `recuse --json | jq` stays clean.
+
+## The watcher, and what it refuses to do
+
+Built. `recuse watch` polls the watchlist plus an optional discovery scan, diffs
+each market's lifecycle against the last snapshot, and reports what moved.
+
+Three decisions that are the whole design:
+
+The first pass reports nothing. There is no baseline, and firing on everything
+the first time it runs is how a tool teaches someone to ignore it. It says how
+many markets it recorded instead, and `baselineAt` in seen.json is what tells the
+comparator which mode it is in.
+
+A market that could not be read produces no event and is counted separately.
+Same rule as the oracle scan: not-read and nothing-happened are different
+statements.
+
+A lifecycle that changes in any way other than growing at the end is reported as
+`rewritten` rather than quietly re-baselined. Gamma editing settled history under
+us is itself the news.
+
+Settlement is detected from prices as well as from the lifecycle, because Gamma
+does not always append a `resolved` step when a market lands.
+
+No `--exec` and no `child_process`, deliberately. SECURITY.md claims the tool
+spawns nothing, and `recuse watch --json | while read` gives anyone the same
+power. The only outbound sink is a webhook POST.
+
+Enrichment is memoised per market per pass. A lifecycle that grew three steps
+produces three events on one market, and without the cache that was three
+identical holder lookups.
+
+State is written to a temp file and renamed, because a daemon running for days
+will be killed mid-write eventually, and a truncated seen.json silently
+re-baselines everything in it.

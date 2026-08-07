@@ -4,7 +4,9 @@
 
 `recuse` holds no private keys, signs nothing, places no orders and never asks for a wallet. It makes GET and POST requests to public endpoints and prints tables. There is nothing in it worth stealing, which is the strongest control available and the reason it is built this way.
 
-It writes one file, `~/.recuse/update.json`, created 0600 in a directory created 0700. Nothing else touches the filesystem.
+It writes to `~/.recuse` and nowhere else. That directory is created 0700 and every file in it 0600: the update cache, the watchlist, the last snapshot of each watched market, and the append only event log. A watchlist is a statement about what someone is trading, so it is not left world readable.
+
+Nothing is ever spawned. There is no `--exec`, no shell hook and no `child_process` import anywhere in the tool. `recuse watch --json` emits one event per line, so piping into a shell loop gives anyone the same power without this program having that capability at all.
 
 ## Threat model
 
@@ -33,6 +35,10 @@ Every string from every source is filtered on the way in, in the source module, 
 **`RECUSE_RPC_URL` must be http or https.** It is a URL the tool POSTs to and reads a JSON body back from. Without a scheme check, `file:` would turn a config value into a local file read.
 
 **Values interpolated into URLs and queries are revalidated at the interpolation site**, not trusted from wherever they were produced. Condition ids must be 32 byte hashes, addresses must be 20 bytes, token ids must be plain decimal integers under 79 digits.
+
+**Webhook URLs are checked before the loop starts**, not on the first event, and any credential in one is removed from error output. A Telegram webhook carries a bot token in its path, and a watcher that runs all night only to fail on delivery would otherwise print it.
+
+**State is written to a temporary file and renamed.** A watcher runs for days and will eventually be killed mid-write. A truncated snapshot file would silently re-baseline every market in it, which is a correctness failure rather than a security one, but the fix is the same.
 
 **Nothing is ever installed.** `recuse update` checks the registry and prints the install command. A CLI that updates itself runs whatever is at that name on the registry the next time the name changes hands or a release is compromised.
 
