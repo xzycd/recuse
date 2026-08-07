@@ -70,7 +70,11 @@ for (const file of sources) {
   const lines = readFileSync(join(ROOT, file), 'utf8').split('\n');
   lines.forEach((line, i) => {
     const isComment = /^\s*(\/\/|\*|\/\*)/.test(line);
-    if (isComment && line.includes('—')) {
+    // Backticks stripped here for the same reason they are in prose: a comment
+    // naming the glyph while explaining this rule is not writing with it. This
+    // file was the first thing the check failed on, which is the correct
+    // instinct applied one level too broadly.
+    if (isComment && line.replace(/`[^`]*`/g, '').includes('—')) {
       failures.push(`${file}:${i + 1}  em dash in a comment\n    ${line.trim()}`);
     }
   });
