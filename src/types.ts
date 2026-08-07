@@ -102,37 +102,78 @@ export interface Conflict {
 }
 
 /**
- * The capture score plus every term behind it.
+ * How much of one side of a market sits in how few hands.
  *
- * `score` alone is unfalsifiable. The rest of this object is what makes it
- * checkable, and the UI is required to render it. See DNA.md.
+ * On a contested market this is the plainest available reading of who took the
+ * money. Every term is reported alongside the share, because a share on its own
+ * cannot be checked.
  */
-export interface CaptureScore {
-  /** conflictedWeight / totalWeight, in [0, 1]. */
-  score: number;
-  /** Combined weight of actors holding a position in this market. */
-  conflictedWeight: number;
-  /** Combined weight of every actor considered. */
-  totalWeight: number;
-  /** How many actors were conflicted, of how many examined. */
-  conflictedCount: number;
-  actorCount: number;
-  /** Combined USD exposure held by conflicted actors. */
-  exposure: number;
-  /** The conflicts themselves, largest weight first. */
-  conflicts: Conflict[];
+export interface Concentration {
+  side: Side;
   /**
-   * Why this score should be distrusted, if it should be. Empty means every
-   * actor's position could be checked.
+   * Why this side is the one being measured. `wiped` means the market has
+   * settled and this is the side that lost — the only side still fully visible,
+   * because winners redeem and losers do not. `leading` means the market is
+   * live and both sides are intact.
    */
-  caveats: string[];
+  meaning: 'wiped' | 'leading';
+  /** How many top holders the share covers. */
+  topN: number;
+  /** topSize / totalSize, in [0, 1]. */
+  topShare: number;
+  topSize: number;
+  totalSize: number;
+  /** Holders seen on this side. The API pages, so this is a floor, not a count. */
+  holderCount: number;
 }
+
+/**
+ * An address seen across several contested markets.
+ *
+ * Counts losses, not wins — see the redemption note in core/capture.ts. Winners
+ * redeem and vanish from holder data; losers stay, holding tokens worth nothing.
+ *
+ * The signal is deliberately weaker than it sounds: being on the losing side of
+ * a disputed market is not evidence of anything on its own, since someone has
+ * to be. Doing it repeatedly is worth a look. The tool reports the tally and
+ * lets the reader draw the line.
+ */
+export interface RepeatPlayer {
+  address: string;
+  name?: string;
+  /** Contested markets where this address held the side that lost. */
+  losses: number;
+  /** Contested markets where this address held any side at all. */
+  appearances: number;
+  /** losses / appearances. Meaningless below a handful of appearances. */
+  lossRate: number;
+  /** Combined token size across losing appearances. */
+  size: number;
+}
+
+/**
+ * Which evidence a result is standing on.
+ *
+ * `positions` is what every user gets with no setup. `positions+chain` needs an
+ * RPC that will serve log ranges, which the free public endpoints will not.
+ * The tool always states which one produced a given answer — a partial picture
+ * presented as a complete one is the failure this project exists to catch.
+ */
+export type EvidenceTier = 'positions' | 'positions+chain';
 
 /** A market plus everything we know about who decides it. */
 export interface Assessment {
   market: Market;
   dispute: DisputeState;
-  capture: CaptureScore;
+  /** Concentration of the leading side, when holders could be read. */
+  concentration?: Concentration;
+  /** Empty unless the chain layer is configured and reachable. */
+  actors: Actor[];
+  /** Empty unless the chain layer is configured and reachable. */
+  conflicts: Conflict[];
+  tier: EvidenceTier;
+  /** Why this reading is incomplete. Empty means it is not. */
+  caveats: string[];
   /** Money at stake, used to rank. */
   pool: number;
   fetchedAt: string;
