@@ -26,6 +26,60 @@ export class HttpError extends Error {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * How much of a response we are willing to hold in memory.
+ *
+ * `res.json()` buffers whatever arrives, with no limit. A full page of Gamma
+ * markets is a few hundred kilobytes, so 32MB is far past anything legitimate
+ * and still small enough that a misbehaving or hostile endpoint cannot walk the
+ * process into an out-of-memory kill by streaming forever.
+ */
+export const MAX_BODY_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Read a response body as JSON, refusing to buffer past a cap.
+ *
+ * Content-Length is checked first when the server sends one, then the actual
+ * bytes are counted while reading, because Content-Length is a claim and the
+ * stream is the fact.
+ */
+export async function readJsonCapped<T>(res: Response, max = MAX_BODY_BYTES): Promise<T> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > max) {
+    throw new Error(`response too large: ${declared} bytes`);
+  }
+
+  if (!res.body) return (await res.json()) as T;
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > max) throw new Error(`response exceeded ${max} bytes`);
+      chunks.push(value);
+    }
+  } finally {
+    // Releasing rather than cancelling on the happy path; cancel on the throw
+    // is what stops a hostile endpoint from holding the socket open.
+    reader.releaseLock();
+    if (total > max) await res.body.cancel().catch(() => {});
+  }
+
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return JSON.parse(new TextDecoder().decode(joined)) as T;
+}
+
+/**
  * Fetch and parse JSON, retrying on network faults and 5xx.
  *
  * 4xx is not retried: the request is wrong and repeating it just wastes the
@@ -62,7 +116,7 @@ export async function getJson<T>(url: string, opts: FetchOptions = {}): Promise<
         continue;
       }
 
-      return (await res.json()) as T;
+      return await readJsonCapped<T>(res);
     } catch (err) {
       if (err instanceof HttpError && err.status < 500 && err.status !== 429) throw err;
       lastError = err;
