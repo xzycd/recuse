@@ -3,11 +3,16 @@
  * sources actually answered.
  */
 
-import { fetchHolders } from '../sources/dataapi.js';
+import { fetchHolders, sideForIndex } from '../sources/dataapi.js';
 import { chainConfigured } from '../sources/chain.js';
-import { caveatsFor, concentration, observableSide, repeatPlayers } from './capture.js';
+import { fetchTokenPositions } from '../sources/subgraph.js';
+import {
+  caveatsFor, concentration, observableSide, repeatPlayers, tradeConcentration, winningSide,
+} from './capture.js';
 import { disputeWeight, parseDispute } from './dispute.js';
-import type { Assessment, Holder, Market, RepeatPlayer } from '../types.js';
+import type {
+  Assessment, EvidenceTier, Holder, Market, RepeatPlayer, Side, Winner,
+} from '../types.js';
 
 /** How many holders to request per market. The API pages beyond this. */
 const HOLDER_LIMIT = 100;
@@ -15,6 +20,21 @@ const HOLDER_LIMIT = 100;
 export interface AssessOptions {
   holderLimit?: number;
   topN?: number;
+  /**
+   * Rebuild the winning side from trades. Off by default on the radar, where it
+   * would add a subgraph round trip per row, and on for a single market, where
+   * one extra request is worth the half of the market it recovers.
+   */
+  winners?: boolean;
+  winnerLimit?: number;
+}
+
+/** Which CLOB token id represents a side, using the market's own labels. */
+export function tokenIdForSide(market: Market, side: Side): string | undefined {
+  for (let i = 0; i < market.tokenIds.length; i++) {
+    if (sideForIndex(market, i) === side) return market.tokenIds[i];
+  }
+  return undefined;
 }
 
 /**
@@ -25,7 +45,7 @@ export interface AssessOptions {
  * that says so is useful, and a crash is not.
  */
 export async function assess(market: Market, opts: AssessOptions = {}): Promise<Assessment> {
-  const { holderLimit = HOLDER_LIMIT, topN = 5 } = opts;
+  const { holderLimit = HOLDER_LIMIT, topN = 5, winnerLimit = 20 } = opts;
 
   const dispute = parseDispute(market);
   const observable = observableSide(market);
@@ -42,7 +62,41 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
     ? concentration(holders, observable.side, observable.meaning, topN)
     : undefined;
 
-  const tier = chainConfigured() ? 'positions+chain' : 'positions';
+  // The other half of a settled market, the half redemption erased. Only asked
+  // for when requested, and only when there is a decided winner to ask about.
+  const won = winningSide(market);
+  const winToken = won ? tokenIdForSide(market, won) : undefined;
+
+  let winners: Winner[] | undefined;
+  let winnerConc: Assessment['winnerConcentration'];
+  let winnersFailed: string | undefined;
+  let winnerFloor: number | undefined;
+  let winnersTruncated = false;
+
+  if (opts.winners && won && winToken) {
+    const scan = await fetchTokenPositions(winToken, { limit: winnerLimit });
+    if (scan.failed) {
+      winnersFailed = scan.failed;
+    } else {
+      winners = scan.positions.map((p) => ({
+        address: p.address, bought: p.bought, net: p.net, spent: p.spent, netSpent: p.netSpent,
+      }));
+      winnerConc = tradeConcentration(winners, won, scan.floor, topN);
+      winnerFloor = scan.floor;
+      winnersTruncated = scan.truncated;
+    }
+  } else if (opts.winners && won && !winToken) {
+    winnersFailed = 'market has no usable token id';
+  }
+
+  const tier: EvidenceTier = [
+    'positions',
+    winnerConc ? 'trades' : '',
+    chainConfigured() ? 'chain' : '',
+  ]
+    .filter(Boolean)
+    .join('+') as EvidenceTier;
+
   const caveats = caveatsFor({
     tier,
     holderCount: holders.length,
@@ -50,6 +104,9 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
     // means there is more book than we were shown.
     holdersTruncated: holders.length >= holderLimit,
     settled: observable?.settled ?? false,
+    winnersFailed,
+    winnerFloor,
+    winnersTruncated,
   });
 
   if (holdersFailed) caveats.unshift('holder lookup failed for this market');
@@ -59,6 +116,8 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
     market,
     dispute,
     concentration: conc,
+    winnerConcentration: winnerConc,
+    winners,
     // Populated only when the chain layer is configured and reachable.
     actors: [],
     conflicts: [],
@@ -70,7 +129,11 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
 }
 
 /** Read several markets, in dispute-weight order. */
-export async function assessAll(markets: Market[], opts: AssessOptions = {}): Promise<Assessment[]> {
+export async function assessAll(
+  markets: Market[],
+  opts: AssessOptions = {},
+  onProgress?: (done: number, total: number) => void,
+): Promise<Assessment[]> {
   const out: Assessment[] = [];
 
   // Sequential: these endpoints are free and unmetered, and a burst of
@@ -78,6 +141,7 @@ export async function assessAll(markets: Market[], opts: AssessOptions = {}): Pr
   // infrastructure.
   for (const market of markets) {
     out.push(await assess(market, opts));
+    onProgress?.(out.length, markets.length);
   }
 
   return out.sort(
@@ -95,14 +159,18 @@ export async function assessAll(markets: Market[], opts: AssessOptions = {}): Pr
 export async function tallyRepeatPlayers(
   markets: Market[],
   opts: { holderLimit?: number; minAppearances?: number } = {},
+  onProgress?: (done: number, total: number) => void,
 ): Promise<{ players: RepeatPlayer[]; marketsRead: number; marketsFailed: number }> {
   const { holderLimit = HOLDER_LIMIT, minAppearances = 2 } = opts;
 
   const outcomes = [];
   let marketsFailed = 0;
+  let seen = 0;
 
   for (const market of markets) {
     const observable = observableSide(market);
+    seen += 1;
+    onProgress?.(seen, markets.length);
     // Only settled markets have a decided loser. A live market's leading side
     // is a price, and tallying it would count opinions as outcomes.
     if (!observable?.settled) continue;

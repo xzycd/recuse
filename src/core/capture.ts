@@ -12,7 +12,9 @@
  * tally is the finding; the interpretation belongs to whoever reads it.
  */
 
-import type { Concentration, Holder, Market, RepeatPlayer, Side } from '../types.js';
+import type {
+  Concentration, EvidenceTier, Holder, Market, RepeatPlayer, Side, Winner,
+} from '../types.js';
 
 /**
  * Which side a market landed on, read from its prices.
@@ -85,12 +87,57 @@ export function concentration(
   return {
     side,
     meaning,
+    basis: 'balances',
     topN: Math.min(topN, onSide.length),
     topShare: totalSize > 0 ? topSize / totalSize : 0,
     topSize,
     totalSize,
     holderCount: onSide.length,
   };
+}
+
+/**
+ * The same measurement over the winning side, rebuilt from what people bought.
+ *
+ * Kept separate from `concentration` above rather than folded into it, because
+ * the two are not the same quantity and a shared function would invite someone
+ * to compare them. A balance is a position now; a cumulative buy is everything
+ * ever bought. The denominator here is the sum of the buys we were served, not
+ * the sum of every buy, which is why the floor travels with the result.
+ *
+ * `net` is the honest size for a settled market: bought minus resold, so a
+ * wallet that flipped its position before resolution does not read as a winner.
+ * Redemption is not an orderbook sale, so it leaves `net` alone.
+ */
+export function tradeConcentration(
+  winners: Winner[],
+  side: Side,
+  floor: number,
+  topN = 5,
+): Concentration | undefined {
+  const held = winners.filter((w) => w.net > 0).sort((a, b) => b.net - a.net);
+  if (held.length === 0) return undefined;
+
+  const totalSize = held.reduce((a, w) => a + w.net, 0);
+  const topSize = held.slice(0, topN).reduce((a, w) => a + w.net, 0);
+
+  return {
+    side,
+    meaning: 'redeemed',
+    basis: 'trades',
+    topN: Math.min(topN, held.length),
+    topShare: totalSize > 0 ? topSize / totalSize : 0,
+    topSize,
+    totalSize,
+    holderCount: held.length,
+    floor,
+  };
+}
+
+/** Which side won, for a settled market. Undefined while it is still live. */
+export function winningSide(market: Market): Side | undefined {
+  const leading = leadingSide(market);
+  return leading?.settled ? leading.side : undefined;
 }
 
 /** One market's contribution to the cross-market tally. */
@@ -161,14 +208,19 @@ export function repeatPlayers(outcomes: MarketOutcome[], minAppearances = 2): Re
  * carries the same warnings and none of them can quietly drop one.
  */
 export function caveatsFor(opts: {
-  tier: 'positions' | 'positions+chain';
+  tier: EvidenceTier;
   holderCount: number;
   holdersTruncated: boolean;
   settled: boolean;
+  /** Why the winning side could not be rebuilt, when it could not. */
+  winnersFailed?: string;
+  /** Smallest winning position requested, in tokens. */
+  winnerFloor?: number;
+  winnersTruncated?: boolean;
 }): string[] {
   const out: string[] = [];
 
-  if (opts.tier === 'positions') {
+  if (!opts.tier.includes('chain')) {
     out.push('no chain data: proposer and disputer identities unread (set RECUSE_RPC_URL)');
   }
   if (opts.holderCount === 0) {
@@ -176,8 +228,23 @@ export function caveatsFor(opts: {
   } else if (opts.holdersTruncated) {
     out.push(`holder list truncated at ${opts.holderCount}, shares are of what was returned`);
   }
+
   if (opts.settled) {
-    out.push('settled market: winners redeemed and left the book, so only the losing side is visible');
+    if (opts.winnersFailed) {
+      // The distinction that matters: the winning side was not read, as opposed
+      // to being read and found empty. Saying nothing here would leave the
+      // losing side looking like the whole market.
+      out.push(`winning side not rebuilt: ${opts.winnersFailed}`);
+    } else if (opts.winnerFloor) {
+      out.push(
+        `winning side is from trades, not balances, and omits positions under ${opts.winnerFloor} tokens`,
+      );
+      if (opts.winnersTruncated) {
+        out.push('more winning positions exist above that floor than were requested');
+      }
+    } else {
+      out.push('settled market: winners redeemed and left the book, only losers hold balances');
+    }
   } else {
     out.push('market not settled: the leading side is a current price, not an outcome');
   }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { caveatsFor, concentration, leadingSide, observableSide, repeatPlayers } from './capture.js';
+import {
+  caveatsFor, concentration, leadingSide, observableSide, repeatPlayers, tradeConcentration,
+  winningSide,
+} from './capture.js';
 import type { Holder, Market, Side } from '../types.js';
 
 function holder(address: string, side: Side, size: number, name?: string): Holder {
@@ -183,5 +186,79 @@ describe('caveatsFor', () => {
       tier: 'positions+chain', holderCount: 0, holdersTruncated: false, settled: true,
     });
     expect(c.join(' ')).toMatch(/no holders/);
+  });
+});
+
+describe('tradeConcentration', () => {
+  const winners = [
+    { address: '0xa'.padEnd(42, 'a'), bought: 7_132_806, net: 7_026_166, spent: 7_015_571, netSpent: 6_909_677 },
+    { address: '0xb'.padEnd(42, 'b'), bought: 6_884_962, net: 6_884_962, spent: 6_751_932, netSpent: 6_751_932 },
+    { address: '0xc'.padEnd(42, 'c'), bought: 4_071_379, net: 0, spent: 4_050_074, netSpent: 3_632_690 },
+  ];
+
+  it('measures on net position, not on everything ever bought', () => {
+    const c = tradeConcentration(winners, 'NO', 1000, 2)!;
+    // The third wallet bought four million tokens and carried none of them into
+    // settlement. It was never paid, so it is not part of the winning side.
+    expect(c.holderCount).toBe(2);
+    expect(c.totalSize).toBeCloseTo(7_026_166 + 6_884_962, 0);
+  });
+
+  it('says the reading came from trades and that a floor was applied', () => {
+    const c = tradeConcentration(winners, 'NO', 1000, 5)!;
+    expect(c.basis).toBe('trades');
+    expect(c.meaning).toBe('redeemed');
+    expect(c.floor).toBe(1000);
+  });
+
+  it('returns nothing rather than a zero when no position survived', () => {
+    expect(tradeConcentration([winners[2]!], 'NO', 1000)).toBeUndefined();
+    expect(tradeConcentration([], 'NO', 1000)).toBeUndefined();
+  });
+
+  it('never reports a share above one', () => {
+    const c = tradeConcentration(winners, 'NO', 1000, 50)!;
+    expect(c.topShare).toBeLessThanOrEqual(1);
+    expect(c.topShare).toBeCloseTo(1, 6);
+  });
+});
+
+describe('winningSide', () => {
+  const market = (prices: number[]) =>
+    ({ outcomePrices: prices, outcomes: ['Yes', 'No'] }) as never;
+
+  it('names the winner only once a market has actually settled', () => {
+    expect(winningSide(market([0, 1]))).toBe('NO');
+    expect(winningSide(market([1, 0]))).toBe('YES');
+  });
+
+  it('refuses to call a live market, however lopsided', () => {
+    // 0.99 is a price. Treating it as an outcome is how a tool reports a
+    // result for a market that has not resolved.
+    expect(winningSide(market([0.01, 0.99]))).toBeUndefined();
+  });
+});
+
+describe('caveatsFor, winning side', () => {
+  it('distinguishes not read from read and empty', () => {
+    const failed = caveatsFor({
+      tier: 'positions', holderCount: 5, holdersTruncated: false, settled: true,
+      winnersFailed: 'statement timeout',
+    });
+    expect(failed.some((c) => c.includes('not rebuilt'))).toBe(true);
+
+    const read = caveatsFor({
+      tier: 'positions+trades', holderCount: 5, holdersTruncated: false, settled: true,
+      winnerFloor: 1000,
+    });
+    expect(read.some((c) => c.includes('omits positions under 1000'))).toBe(true);
+    expect(read.some((c) => c.includes('not rebuilt'))).toBe(false);
+  });
+
+  it('drops the chain caveat once chain data is present', () => {
+    const withChain = caveatsFor({
+      tier: 'positions+trades+chain', holderCount: 5, holdersTruncated: false, settled: true,
+    });
+    expect(withChain.some((c) => c.includes('RECUSE_RPC_URL'))).toBe(false);
   });
 });

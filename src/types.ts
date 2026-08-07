@@ -111,12 +111,23 @@ export interface Conflict {
 export interface Concentration {
   side: Side;
   /**
-   * Why this side is the one being measured. `wiped` means the market has
-   * settled and this is the side that lost, the only side still fully visible,
-   * because winners redeem and losers do not. `leading` means the market is
-   * live and both sides are intact.
+   * Why this side is the one being measured.
+   *
+   * `wiped`    settled, and this is the side that lost. Still fully visible in
+   *            balances because there is nothing to redeem a loser for.
+   * `redeemed` settled, and this is the side that won. Invisible in balances,
+   *            recovered from what they bought.
+   * `leading`  live market, both sides intact, this side is ahead on price.
    */
-  meaning: 'wiped' | 'leading';
+  meaning: 'wiped' | 'redeemed' | 'leading';
+  /**
+   * What was counted.
+   *
+   * `balances` is what each wallet holds now. `trades` is what each wallet ever
+   * bought. They answer different questions and are never added together: a
+   * winner's balance is zero and their buys are not.
+   */
+  basis: 'balances' | 'trades';
   /** How many top holders the share covers. */
   topN: number;
   /** topSize / totalSize, in [0, 1]. */
@@ -125,6 +136,12 @@ export interface Concentration {
   totalSize: number;
   /** Holders seen on this side. The API pages, so this is a floor, not a count. */
   holderCount: number;
+  /**
+   * Positions smaller than this many tokens were never requested. Zero means no
+   * floor was applied. Set on `trades`, where the store needs a lower bound to
+   * serve the query at all.
+   */
+  floor?: number;
 }
 
 /**
@@ -159,14 +176,36 @@ export interface RepeatPlayer {
  * The tool always states which one produced a given answer. A partial picture
  * presented as a complete one is the failure this project exists to catch.
  */
-export type EvidenceTier = 'positions' | 'positions+chain';
+export type EvidenceTier = 'positions' | 'positions+trades' | 'positions+chain' | 'positions+trades+chain';
+
+/** A wallet that bought the side which went on to win. */
+export interface Winner {
+  address: string;
+  /** Tokens bought, cumulative. Redemption does not reduce it. */
+  bought: number;
+  /** Tokens still held when trading stopped: bought minus resold. */
+  net: number;
+  /** USD paid, cumulative. */
+  spent: number;
+  /** USD paid minus USD received back. The cost basis of `net`. */
+  netSpent: number;
+}
 
 /** A market plus everything we know about who decides it. */
 export interface Assessment {
   market: Market;
   dispute: DisputeState;
-  /** Concentration of the leading side, when holders could be read. */
+  /** Concentration of the visible side, when holders could be read. */
   concentration?: Concentration;
+  /**
+   * Concentration of the side that won, rebuilt from trades.
+   *
+   * Only present on a settled market, and only when the subgraph answered. Its
+   * absence is recorded as a caveat rather than shown as an empty result.
+   */
+  winnerConcentration?: Concentration;
+  /** The largest buyers of the winning side, largest first. */
+  winners?: Winner[];
   /** Empty unless the chain layer is configured and reachable. */
   actors: Actor[];
   /** Empty unless the chain layer is configured and reachable. */
