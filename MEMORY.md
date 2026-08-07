@@ -49,3 +49,58 @@ So the layer is gated on `RECUSE_RPC_URL` and its absence is announced in the fo
 ## An early scan lied
 
 The oracle scan swallowed RPC errors with `if (j.result)` and reported "0 disputes over 30,000 blocks" after all thirty windows failed. Given what this tool is for, that was a useful thing to do to oneself. Everything that scans now returns its failure count and callers surface it.
+
+## The subgraph recovers the winners, with a condition
+
+The next step from the redemption note above is built. Goldsky's
+`polymarket-orderbook-resync` subgraph has a `marketPosition` entity keyed by
+outcome token, and `quantityBought` is cumulative. Redemption does not touch it.
+
+On the Zelenskyy market the winning side shows 907 tokens in current balances and
+71,435,381 in cumulative buys across the top 20. The largest winner bought 7.1
+million tokens and is absent from the holder list entirely.
+
+`netValue` is exactly `valueBought - valueSold`, verified against the raw fields on
+six live positions. So for a settled market the profit is `netQuantity - netValue`,
+because every held token on the winning side redeems for one dollar. That is
+arithmetic, not an estimate, which is why the gain column is allowed to exist.
+
+The condition: the store cannot serve `where market = X order by quantityBought
+desc` without a `quantityBought_gt` floor, and times out intermittently even with
+one. `fetchTokenPositions` walks a floor ladder of 1000, 10000, 100000 tokens and
+reports which rung answered. The floor is a fact about the reading, so it travels
+with the data and appears as a caveat.
+
+The two numbers are never summed. A balance is a position now and a cumulative buy
+is everything ever bought. `Concentration.basis` records which one produced a
+figure, on every surface including JSON.
+
+## Display names are an attack surface
+
+Not theoretical. Polymarket display names are chosen by the account holder, and the
+tool prints them next to claims about that account. A name containing `\x1b[2J` can
+clear the screen and let the wallet forge every row above it. `U+202E` reverses how
+an address renders, which matters more than usual here because every finding is
+anchored to an address.
+
+`core/safe.ts` filters on ingest in the source modules, never at render time. A
+render-time filter is one forgotten call site from a hole and would leave `--json`
+dirty while the table looked clean. It denies by code point rather than matching
+escape-sequence grammar, because grammars keep growing and the control set does not.
+
+Same pass: responses are capped at 32MB, errors are redacted before printing because
+`RECUSE_RPC_URL` carries an API key, and the RPC URL is checked for an http scheme
+so `file:` cannot turn a config value into a file read.
+
+Worth remembering from that pass: `safeEndpoint` sat written and completely unwired
+for an hour, and read exactly like a working defence. Grep for call sites, not for
+definitions.
+
+## Themes did not break the colour rule
+
+Five themes, and inside the data table colour still carries exactly one signal, the
+dispute round count. Themes recolour that ramp and the chrome around it. Chrome is
+the banner, spinner, rules and headings, where nothing is being read off the colour.
+
+The banner and spinner are both suppressed outside a real terminal. The spinner is
+on stderr specifically so `recuse --json | jq` stays clean.

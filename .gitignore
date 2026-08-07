@@ -6,3 +6,10 @@ dist/
 .env.*
 coverage/
 *.tsbuildinfo
+
+# Private working notes. Commercial thinking, pricing, and anything not ready
+# to be read by whoever finds the repo. Never committed.
+notes/
+.recuse/
+scratch/
+*.local.md

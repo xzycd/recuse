@@ -1,7 +1,7 @@
 {
   "name": "recuse",
-  "version": "0.1.0",
-  "description": "See who decides a Polymarket market, and what they own.",
+  "version": "0.2.0",
+  "description": "Read the record behind a Polymarket resolution: dispute rounds, who was wiped out, and who bought the side that won.",
   "type": "module",
   "license": "MIT",
   "bin": {

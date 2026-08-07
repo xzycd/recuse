@@ -30,9 +30,23 @@ No em dashes in prose. No emoji anywhere, including the TUI, where they break co
 
 **Report, do not accuse.** The word is conflict, never fraud. Someone has to lose every market. The tool supplies tallies and the reader supplies judgement.
 
+**Never add a balance to a cumulative buy.** They answer different questions. A balance is a position now, and a winner's is zero. A cumulative buy is everything ever bought, and nothing erases it. Both are printed, always labelled, never summed.
+
+**Treat every remote string as hostile.** Display names are chosen by the accounts this tool makes claims about. A name carrying an escape sequence can redraw the table it appears in, and one carrying a bidirectional override can change how an address renders. Sanitise at ingest, in the source module, so `--json` is as clean as the table.
+
+**Never print a credential.** `RECUSE_RPC_URL` usually holds an API key, and the natural next step after an error is pasting it into an issue. Every error that reaches a user goes through the redactor first.
+
+**Never install anything.** The tool checks for a new version and prints the command. A CLI that updates itself runs whatever is at that name on the registry the next time the name changes hands.
+
 ## Interface rules
 
-Colour carries exactly one signal: dispute rounds. Grey for none, yellow for one, red for more. When a second thing gets coloured, the eye learns to ignore colour and the one signal that mattered goes unread.
+Inside the data table, colour carries exactly one signal: dispute rounds. Cold for none, warm for one, hot for more. When a second column gets coloured, the eye learns to ignore colour and the one signal that mattered goes unread.
+
+Themes change what that ramp looks like and what the chrome around it looks like. They do not add a second coloured meaning to a column, and no theme is allowed a palette where the three ramp steps are hard to tell apart. Chrome is the banner, the spinner, the rules and the headings, and it can be as warm as it likes because nothing is being read off it.
+
+The banner draws once, on a real terminal, and never into a pipe. A logo in `recuse | grep` output is somebody else's problem to strip.
+
+The spinner goes to stderr, draws nothing when stderr is not a terminal, and always erases the line it drew. It says what is happening because a scan takes seconds and seconds of nothing reads as a hang.
 
 Two levels of depth, list and detail. A third would need its own navigation model and the data is not that deep.
 
