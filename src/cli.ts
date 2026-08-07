@@ -7,7 +7,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { assess, assessAll, tallyRepeatPlayers } from './core/assess.js';
+import { assess, assessAll, assessWallet, tallyRepeatPlayers } from './core/assess.js';
 import { checkForUpdate, updateNotice } from './core/update.js';
 import { checkWebhook } from './core/notify.js';
 import { redactMessage } from './core/safe.js';
@@ -22,7 +22,7 @@ import { splash } from './ui/logo.js';
 import { startSpinner } from './ui/loading.js';
 import {
   renderEvent, renderMarket, renderPassSummary, renderPlayers, renderRadar, renderThemes,
-  renderWatchlist, renderWatchStart, renderWinners,
+  renderWallet, renderWatchlist, renderWatchStart, renderWinners,
 } from './ui/plain.js';
 import { colourise, THEMES, themeNames } from './ui/theme.js';
 
@@ -44,6 +44,7 @@ const USAGE = `usage
   recuse                      contested markets, most contested first
   recuse market <id|slug>     one market: resolution history, both sides
   recuse winners <id|slug>    who bought the side that won, and for how much
+  recuse wallet <address>     one wallet's record, disputed markets first
   recuse players              addresses left holding losing sides, repeatedly
   recuse update               check whether a newer version was published
   recuse --help
@@ -59,7 +60,7 @@ watching
 options
   --json            machine-readable output
   --plain           force the plain renderer
-  --limit <n>       rows to show (default 25)
+  --limit <n>       rows to show, or positions to read for wallet (default 25)
   --scan <n>        markets to examine (default 600)
   --all             include markets that were never contested
   --winners         rebuild the winning side on the radar too, one query per row
@@ -351,6 +352,36 @@ async function runWinners(args: Args): Promise<number> {
   return 0;
 }
 
+async function runWallet(args: Args): Promise<number> {
+  const style = detectStyle({ colour: args.colour, theme: args.theme });
+
+  if (!args.target) {
+    process.stderr.write('recuse wallet: needs a 0x address\n');
+    return 2;
+  }
+
+  const spinner = args.json
+    ? { update() {}, stop() {} }
+    : startSpinner('reading positions', { theme: style.theme, depth: style.depth });
+
+  let ledger;
+  try {
+    ledger = await assessWallet(args.target, { limit: args.limit });
+  } finally {
+    spinner.stop();
+  }
+
+  if (args.json) {
+    emitJson(ledger);
+    return 0;
+  }
+
+  emit(renderWallet(ledger, style));
+  // A wallet that returned nothing at all is a miss worth an exit code, so a
+  // script can tell "no positions" from "here they are".
+  return ledger.entries.length === 0 ? 1 : 0;
+}
+
 async function runPlayers(args: Args): Promise<number> {
   const style = detectStyle({ colour: args.colour, theme: args.theme });
   showSplash(args, style);
@@ -613,6 +644,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         return await runMarket(args);
       case 'winners':
         return await runWinners(args);
+      case 'wallet':
+      case 'actor':
+        return await runWallet(args);
       case 'players':
         return await runPlayers(args);
       case 'watch':

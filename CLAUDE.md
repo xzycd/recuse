@@ -16,6 +16,8 @@ src/
     safe.ts       making remote text safe to put on a terminal. pure
     dispute.ts    parses umaResolutionStatuses into rounds, phase, clock
     capture.ts    which side is measurable, concentration, repeat tallies
+    wallet.ts     one wallet's ledger, priced from the on-chain payout. pure
+    rank.ts       sort order, filtering, viewport. pure
     watch.ts      what counts as a resolution moving. pure
     update.ts     version check. checks and prints, never installs
     assess.ts     assembles one answer from every source (does I/O)
@@ -25,7 +27,7 @@ src/
   ui/
     theme.ts      five themes, colour depth detection, hex to escape
     format.ts     numbers, widths, NO_COLOR and non-TTY detection
-    logo.ts       the wordmark and the launch banner
+    logo.ts       the wordmark, the face, and the launch banner
     loading.ts    the spinner, on stderr, silent when piped
     plain.ts      the plain renderer, and the fallback for pipes
     App.tsx       the ink radar
@@ -34,12 +36,12 @@ tools/
   logo.mjs    regenerates assets/. run after changing the wordmark
 ```
 
-`core/dispute.ts`, `core/capture.ts`, `core/safe.ts` and `core/watch.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
+`core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/wallet.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
 
 ## Commands
 
 ```sh
-npm test          # 192 tests, no network, sub-second
+npm test          # 219 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
 node tools/logo.mjs   # regenerate assets/banner.svg and assets/mark.svg
@@ -62,6 +64,12 @@ Before trusting a change to anything that touches an API, run it against live da
 **Winners are invisible in balances.** They redeem and their balances go to zero. On the Zelenskyy market the winning side shows 907 tokens in `data-api` and 71,435,381 in the subgraph. Anything reasoning about "who won" from current holders is wrong. Use `sources/subgraph.ts`, and never add a balance to a cumulative buy.
 
 **The subgraph needs a lower bound to answer at all.** `where market = X order by quantityBought desc` times out in the store without a `quantityBought_gt` floor, and intermittently even with one. `fetchTokenPositions` escalates the floor and reports which one worked. That floor is a fact about the reading, not a display preference, so it travels with the data.
+
+**The subgraph reports `outcomeIndex` as null, and `Number(null)` is 0.** Reading which side a position was on from that field gives a complete table of confident wrong answers with everything on outcome 0. It reads like working code. The index comes from Gamma's `clobTokenIds`, which is index aligned with `outcomes`, and a token missing from that array is dropped rather than guessed at. See `core/wallet.ts`.
+
+**A settled position pays `numerator / denominator`, not one dollar.** UMA resolves markets 50/50 sometimes, and treating that as a loss on both sides is wrong on both.
+
+**Gamma accepts `condition_ids` repeated**, up to its page size, and returns every match. A wallet lookup is one request per hundred markets rather than one per market. Still verify each record against what was asked for.
 
 **Free public Polygon RPCs cannot scan logs.** They cap `eth_getLogs` between 10 and 50 blocks and throttle further under load. This is why the chain layer is opt in. Do not try to work around it by scanning harder.
 
@@ -125,3 +133,6 @@ A running log. One line each, added when something cost real time to find out an
 - `padEnd` counts UTF-16 units, so two emoji in a market question shift every column to their right by one cell.
 - The watcher enriched every event with a holder lookup, so a lifecycle that grew three steps made three identical requests. Memoise per market per pass.
 - Gamma does not always append a `resolved` step when a market lands, so settlement has to be detected from prices as well as from the lifecycle.
+- The subgraph's `outcomeIndex` is null everywhere, and `Number(null)` is 0. Any absent numeric coerced with `Number` becomes a real-looking answer. Check for null before coercing, always.
+- `MarketPosition.market` is non-null in the schema and dangles on real records, so traversing it fails the whole query. The token id is the position id after character 42.
+- The radar drew every row and overflowed any terminal shorter than the list. Anything that renders a list needs a viewport.

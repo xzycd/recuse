@@ -468,3 +468,99 @@ export function renderWatchlist(
 
   return lines.join('\n');
 }
+
+/** A signed dollar figure, so a loss never reads like a gain at a glance. */
+function signed(n: number): string {
+  return `${n >= 0 ? '+' : '-'}${money(Math.abs(n)).replace('$', '$')}`;
+}
+
+/**
+ * One wallet's record, contested markets first.
+ *
+ * Sorted that way because someone opening this in `recuse` rather than in a
+ * generic wallet tracker is here for the disputed ones. The summary reports
+ * contested separately from everything for the same reason.
+ */
+export function renderWallet(
+  ledger: {
+    address: string;
+    entries: {
+      question: string; side: string; rounds: number; net: number; cost: number;
+      gain?: number; payout?: number; resolved: boolean;
+    }[];
+    won: number; lost: number; split: number; open: number;
+    gain: number; contestedGain: number; contested: number; caveats: string[];
+  },
+  style: Style,
+): string {
+  const lines: string[] = [];
+
+  lines.push(bold(ledger.address, style));
+
+  const resolved = ledger.won + ledger.lost + ledger.split;
+  if (resolved === 0 && ledger.open === 0) {
+    lines.push(rule(style));
+    lines.push(dim('no positions found for this address.', style));
+    for (const c of ledger.caveats) lines.push(dim(`  · ${c}`, style));
+    return lines.join('\n');
+  }
+
+  const summary = [
+    `${resolved} resolved`,
+    `${ledger.won} won`,
+    `${ledger.lost} lost`,
+    ledger.split > 0 ? `${ledger.split} split` : '',
+    ledger.open > 0 ? `${ledger.open} open` : '',
+    `${signed(ledger.gain)} net`,
+  ].filter(Boolean);
+  lines.push(dim(summary.join(' · '), style));
+
+  if (ledger.contested > 0) {
+    // The number this tool exists to show, kept on its own line rather than
+    // buried in the summary above it.
+    lines.push(
+      paintRounds(2, `${ledger.contested} of those were disputed`, style) +
+        dim(`, worth ${signed(ledger.contestedGain)}`, style),
+    );
+  }
+
+  lines.push(rule(style));
+
+  const qW = Math.max(20, style.width - 46);
+  lines.push(
+    dim(
+      padStart('RDS', 4) + '  ' + padEnd('SIDE', 7) + padEnd('RESULT', 8) +
+        padStart('HELD', 8) + padStart('GAIN', 10) + '  ' + padEnd('MARKET', qW),
+      style,
+    ),
+  );
+
+  for (const e of ledger.entries.slice(0, 60)) {
+    const result = !e.resolved
+      ? dim(padEnd('open', 8), style)
+      : e.payout === 1
+        ? padEnd('won', 8)
+        : e.payout === 0
+          ? dim(padEnd('lost', 8), style)
+          // A split resolution pays both sides something. Reporting it as a
+          // loss on both would be wrong on both, and UMA does hand these down.
+          : padEnd(`${Math.round((e.payout ?? 0) * 100)}%`, 8);
+
+    lines.push(
+      paintRounds(e.rounds, padStart(e.rounds > 0 ? `${e.rounds}×` : '·', 4), style) + '  ' +
+        padEnd(e.side, 7) +
+        result +
+        padStart(count(e.net), 8) +
+        padStart(e.gain === undefined ? '—' : signed(e.gain), 10) + '  ' +
+        padEnd(e.question, qW),
+    );
+  }
+
+  lines.push(rule(style));
+  lines.push(
+    dim('from trades, not balances, so positions that redeemed are still counted.', style),
+  );
+  for (const c of ledger.caveats) lines.push(dim(`  · ${c}`, style));
+
+  return lines.join('\n');
+}

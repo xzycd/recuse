@@ -14,7 +14,7 @@ Concrete, second person, no adjectives doing work that a number should do.
 
 Say "52.1 million tokens went to zero" and not "significant losses". Say "the free public endpoints cap at 50 blocks" and not "RPC limitations exist". If a sentence would survive being pasted into a different project's README, it is too vague to keep.
 
-No em dashes in prose. No emoji anywhere, including the TUI, where they break column alignment. Headings are sentence case. Commit messages are lowercase and imperative.
+No em dashes in prose. No emoji anywhere, including the TUI, where they break column alignment. The logo is drawn from block and ASCII characters rather than being an emoji, so it occupies exactly the cells it claims to, which is the property that rule protects. Headings are sentence case. Commit messages are lowercase and imperative.
 
 ## Rules that are not negotiable
 
@@ -37,6 +37,8 @@ No em dashes in prose. No emoji anywhere, including the TUI, where they break co
 **Never print a credential.** `RECUSE_RPC_URL` usually holds an API key, and the natural next step after an error is pasting it into an issue. Every error that reaches a user goes through the redactor first.
 
 **A watcher's first pass reports nothing.** There is no baseline to compare against, and firing on everything the first time it runs is how a tool teaches someone to ignore it. Say how many markets were recorded instead.
+
+**Never coerce an absent number.** `Number(null)` is 0 and `Number(undefined)` is NaN, and the first one is the dangerous one because it looks like an answer. A missing outcome index, payout or price is `undefined` and is reported as unknown, never as zero.
 
 **Never install anything.** The tool checks for a new version and prints the command. A CLI that updates itself runs whatever is at that name on the registry the next time the name changes hands.
 

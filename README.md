@@ -32,16 +32,26 @@ Or `npm i -g recuse`. Node 20 or newer. No API keys, no account, no config file.
 recuse                          # contested markets, most contested first
 recuse market <id-or-slug>      # one market, both sides of it
 recuse winners <id-or-slug>     # who bought the side that won, and for how much
+recuse wallet <address>         # one wallet's record, disputed markets first
 recuse players                  # addresses that keep ending up on the losing side
 recuse update                   # check for a newer version
 recuse market <id> --json       # same data, pipeable
 ```
 
-In a terminal you get an interactive list. Arrow keys move, enter opens the detail pane, q quits. Pipe it anywhere and you get a single plain table instead, so `recuse | grep Iran` does what you expect.
+In a terminal you get an interactive list. Pipe it anywhere and you get a single plain table instead, so `recuse | grep Iran` does what you expect.
 
-Useful flags: `--scan <n>` for how many markets to examine, `--limit <n>` for how many to show, `--all` to include markets nobody ever contested, `--plain` to skip the interactive view, `--theme <name>` to change the palette.
+| key | |
+| --- | --- |
+| `j` `k` `↑` `↓` | move, `g` and `G` for the ends |
+| `enter` | open the detail pane |
+| `/` | filter as you type |
+| `s` | cycle the sort: contested, money, wiped out, deadline |
+| `t` | cycle the theme without restarting |
+| `?` | the full list |
 
-Five themes. `recuse --theme list` shows them, `RECUSE_THEME` sets a default. Inside the table only one thing is ever coloured, the dispute round count, because a table where four columns are coloured teaches you to stop reading colour.
+Five themes. `recuse --theme list` shows them, `RECUSE_THEME` sets a default. Inside the table only one thing is ever coloured, the dispute round count, because a table where four columns are coloured teaches you to stop reading colour. Themes recolour that ramp and the chrome around it; they never give a second column a meaning.
+
+Useful flags: `--scan <n>` for how many markets to examine, `--limit <n>` for how many to show, `--all` to include markets nobody ever contested, `--plain` to skip the interactive view.
 
 ## Watching
 
@@ -145,6 +155,30 @@ ADDRESS                                       SHARE   BOUGHT     HELD     PAID  
 
 Frequently unexciting, which is the point. Most of these wallets bought at 0.98 and made two cents. A tool that only ever surfaced scandals would be manufacturing them.
 
+## Following one wallet
+
+```sh
+recuse wallet 0x889e7f0464c72eb8cda1525ebc12b6aaba9d09e0
+```
+
+```
+38 resolved · 29 won · 9 lost · 1 open · +$859K net
+11 of those were disputed, worth +$275K
+──────────────────────────────────────────────────────────────────────────
+ RDS  SIDE   RESULT      HELD      GAIN  MARKET
+  5×  No     won         7.0M    +$116K  Will Zelenskyy wear a suit before July?
+  2×  No     won         508K    +$152K  Trump ends Ukraine war in first 90 days?
+  2×  Yes    lost        508K    -$134K  Trump ends Ukraine war in first 90 days?
+  2×  Yes    won         400K     +$67K  Yoon out as president of South Korea before May?
+```
+
+Disputed markets sort to the top, because that is why you would look here rather than in a general wallet tracker. The same wallet appears on both sides of the Ukraine market: that is a spread, not a contradiction, and both legs are shown.
+
+Every gain is arithmetic, not an estimate. The position size comes from cumulative trades and the settlement price comes from the condition's on-chain payout, so a wallet that redeemed and vanished from every balance-based tracker is still fully visible here.
+
+Split resolutions are counted as splits. UMA does hand down 50/50 outcomes, and calling one a loss on both sides is wrong on both.
+
+
 ## What the numbers mean
 
 `RDS` is dispute rounds. One round is one person putting up a bond to contest a proposed outcome. Two rounds means two people did.
@@ -189,11 +223,13 @@ Gamma ignores query parameters it does not recognise and answers with its defaul
 
 The subgraph will not sort positions by size without a lower bound on that size. The query times out in the store instead. `recuse` escalates the bound until the query lands and then reports which bound it used, because a floor is a fact about the reading rather than a display setting.
 
+The subgraph also reports `outcomeIndex` as null on every record checked, and `Number(null)` is `0`. Reading which side a position was on from that field gives you a complete table of confident wrong answers with every position on outcome 0. The index has to come from Gamma's `clobTokenIds`, which is index-aligned with `outcomes`.
+
 ## Build
 
 ```sh
 npm install
-npm test        # 192 tests, no network
+npm test        # 219 tests, no network
 npm run build
 ```
 
