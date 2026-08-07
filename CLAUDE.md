@@ -36,7 +36,12 @@ src/
     App.tsx       the ink radar
   cli.ts      arg parsing, command dispatch, --json on every path
 tools/
-  logo.mjs    regenerates assets/. run after changing the wordmark
+  logo.mjs          regenerates assets/. run after changing the wordmark
+  site.mjs          builds site/, flat HTML, no backend and no client JS
+  housekeeping.mjs  the house rules, checked. run by CI
+.github/workflows/
+  ci.yml      build, test and check on node 20 and 22
+  site.yml    nightly site build, publishes to Pages
 ```
 
 `core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/recall.ts`, `core/queue.ts`, `core/ledger.ts`, `core/wallet.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
@@ -44,11 +49,15 @@ tools/
 ## Commands
 
 ```sh
-npm test          # 266 tests, no network, sub-second
+npm test          # 277 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
+npm run check     # the house rules below, enforced
+npm run site      # regenerate site/ from live data, needs a build first
 node tools/logo.mjs   # regenerate assets/banner.svg and assets/mark.svg
 ```
+
+CI runs `build`, `test` and `check` on Node 20 and 22 for every push and pull request. The site rebuilds nightly and publishes to Pages, and refuses to publish a snapshot with fewer than five pages, because a scan that returned nothing is a failed scan rather than an empty day.
 
 ## Testing policy
 
@@ -115,9 +124,10 @@ Three tells survive the obvious checks, so scrub them deliberately:
 Before pushing:
 
 ```sh
-git log --format='%B' | grep -ciE '^(co-authored-by|generated with)'   # must be 0
-grep -rn '—' README.md DNA.md CLAUDE.md src/                           # must be empty
+npm run check
 ```
+
+That is `tools/housekeeping.mjs`, and CI runs it too. It checks prose files for em dashes and emoji, source comments for em dashes, and the commit log for attribution trailers. It skips fenced code blocks deliberately: the renderers use `—` as a no-data glyph in a column, the README shows sample output containing it, and this file documents the check. A flat grep flags all three, and a check that cries wolf gets deleted.
 
 ## Handing off
 

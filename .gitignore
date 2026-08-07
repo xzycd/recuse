@@ -14,3 +14,6 @@ HANDOFF.md
 .recuse/
 scratch/
 *.local.md
+
+# Generated snapshot site. Built by tools/site.mjs and published by CI.
+site/

@@ -45,6 +45,11 @@ export interface WalletEntry {
 
 export interface WalletLedger {
   address: string;
+  /**
+   * Polymarket display name, when the account made one public. Absent means no
+   * name, or a lookup that did not answer, and never distinguishes them.
+   */
+  name?: string;
   entries: WalletEntry[];
   /** Resolved positions only. An open position has no result to count. */
   won: number;

@@ -38,6 +38,12 @@ export interface LedgerSummary {
   events: number;
   /** Lines that would not parse, from a process killed mid-append. */
   skipped: number;
+  /**
+   * True when the log was too large to read whole and only its tail was
+   * summarised. Reported rather than hidden: totals over a slice presented as
+   * totals over the log would be a confident count across ground never covered.
+   */
+  truncated: boolean;
   /** Distinct markets the log has ever recorded. */
   markets: number;
   /** Oldest and newest event timestamps, when there are any. */
@@ -58,6 +64,7 @@ export function summarise(
   events: WatchEvent[],
   skipped: number,
   limit = 10,
+  truncated = false,
 ): LedgerSummary {
   const byKind: Partial<Record<EventKind, number>> = {};
   const tallies = new Map<string, MarketTally>();
@@ -110,6 +117,7 @@ export function summarise(
   return {
     events: events.length,
     skipped,
+    truncated,
     markets: all.length,
     first,
     last,

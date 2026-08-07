@@ -442,8 +442,8 @@ async function runQueue(args: Args): Promise<number> {
 /** What the event log has accumulated. */
 async function runLedger(args: Args): Promise<number> {
   const style = detectStyle({ colour: args.colour, theme: args.theme });
-  const { events, skipped } = await readEventLog();
-  const summary = summarise(events, skipped, args.limit);
+  const { events, skipped, truncated } = await readEventLog();
+  const summary = summarise(events, skipped, args.limit, truncated);
 
   if (args.json) {
     emitJson(summary);

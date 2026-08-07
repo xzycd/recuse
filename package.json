@@ -18,6 +18,8 @@
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "check": "node tools/housekeeping.mjs",
+    "site": "node tools/site.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

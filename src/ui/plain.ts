@@ -518,6 +518,7 @@ function signed(n: number): string {
 export function renderWallet(
   ledger: {
     address: string;
+    name?: string;
     entries: {
       question: string; side: string; rounds: number; net: number; cost: number;
       gain?: number; payout?: number; resolved: boolean;
@@ -529,7 +530,11 @@ export function renderWallet(
 ): string {
   const lines: string[] = [];
 
-  lines.push(bold(ledger.address, style));
+  // The address leads, always. A name is chosen by the account and the address
+  // is what every row below joins on.
+  lines.push(
+    bold(ledger.address, style) + (ledger.name ? dim(`  ${ledger.name}`, style) : ''),
+  );
 
   const resolved = ledger.won + ledger.lost + ledger.split;
   if (resolved === 0 && ledger.open === 0) {
@@ -727,6 +732,11 @@ export function renderLedger(s: LedgerSummary, style: Style): string {
   }
 
   lines.push(rule(style));
+  if (s.truncated) {
+    // The counts above are over the tail, not the log. Saying so is the whole
+    // difference between a summary and a wrong total.
+    lines.push(dim('log too large to read whole. everything above is its most recent part.', style));
+  }
   if (s.skipped > 0) {
     lines.push(dim(`${s.skipped} unreadable lines, from a process killed mid-append.`, style));
   }

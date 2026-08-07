@@ -1,0 +1,88 @@
+# Builds the snapshot site and publishes it to GitHub Pages.
+#
+# Nightly, because the underlying record changes on the oracle's schedule and
+# not on ours, and a snapshot that claims to be current has to be. Also on a
+# push to main, so a change to the generator is visible without waiting a day,
+# and by hand from the Actions tab.
+#
+# There is no backend and no database anywhere in this. The job scans Gamma,
+# writes flat HTML, and uploads it. If this workflow is deleted the site simply
+# stops updating rather than breaking.
+
+name: site
+
+on:
+  schedule:
+    # 06:00 UTC. Far enough after midnight that a day's resolutions have landed.
+    - cron: '0 6 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/site.mjs'
+      - 'src/**'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A nightly run and a push run must not publish over each other. The newer one
+# waits rather than being cancelled, because whichever finishes last should be
+# the one on disk.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The generator imports the compiled engine, so the numbers on the pages
+      # come from the same assess the CLI calls. Tests run first: publishing a
+      # site built from a broken engine is worse than not publishing.
+      - run: npm test
+      - run: npm run build
+
+      - name: Generate
+        env:
+          SITE_SCAN: '600'
+          SITE_PAGES: '80'
+          SITE_ORIGIN: https://xzycd.github.io/recuse
+        run: node tools/site.mjs
+
+      # A scan that returns nothing is a failed scan, not an empty day. Without
+      # this, one bad night silently replaces the site with an empty table.
+      - name: Refuse to publish an empty snapshot
+        run: |
+          pages=$(find site -name '*.html' | wc -l)
+          echo "$pages pages"
+          if [ "$pages" -lt 5 ]; then
+            echo "only $pages pages built, refusing to publish over a good snapshot"
+            exit 1
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -239,6 +239,10 @@ export async function assessWallet(
     };
   }
 
+  // One request, for the header of the whole view. Best effort: a wallet with
+  // no name is the common case and is not worth failing a ledger over.
+  const named = await fetchDisplayNames([address]).catch(() => undefined);
+
   const payoutScan = await fetchTokenPayouts(scan.positions.map((p) => p.tokenId));
   const conditions = [...new Set([...payoutScan.byToken.values()].map((p) => p.conditionId))];
   const { markets, missing } = await fetchMarketsByCondition(conditions);
@@ -263,5 +267,10 @@ export async function assessWallet(
     ledger.caveats.push('more positions exist than were requested, use --limit');
   }
 
-  return { ...ledger, floor: scan.floor, truncated: scan.truncated };
+  return {
+    ...ledger,
+    name: named?.byAddress.get(address.trim().toLowerCase()),
+    floor: scan.floor,
+    truncated: scan.truncated,
+  };
 }
