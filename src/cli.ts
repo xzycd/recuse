@@ -94,6 +94,24 @@ async function runRadar(args: Args): Promise<number> {
     return 0;
   }
 
+  // The interactive view needs a real terminal to draw into and keys to read
+  // from. Piped, redirected or explicitly asked for plain, it renders once and
+  // exits — which is also what makes `recuse | grep` behave.
+  const interactive = !args.plain && process.stdout.isTTY === true && process.stdin.isTTY === true;
+
+  if (interactive) {
+    const [{ render }, React, { App }] = await Promise.all([
+      import('ink'),
+      import('react'),
+      import('./ui/App.js'),
+    ]);
+    const app = render(
+      React.createElement(App, { assessments, scanned, contestedTotal: markets.length }),
+    );
+    await app.waitUntilExit();
+    return 0;
+  }
+
   emit(
     renderRadar(
       assessments,
