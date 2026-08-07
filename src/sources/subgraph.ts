@@ -20,7 +20,7 @@
  * `netQuantity` travels alongside it.
  */
 
-import { redactMessage, safeAddress, safeTokenId } from '../core/safe.js';
+import { redactMessage, safeAddress, safeHash, safeTokenId } from '../core/safe.js';
 import { HttpError, readJsonCapped } from './http.js';
 
 const ENDPOINT =
@@ -183,4 +183,139 @@ export async function fetchTokenPositions(
   }
 
   return { positions: [], floor: 0, truncated: false, failed: lastError.slice(0, 160) };
+}
+
+/** A position held by one wallet, before it is joined to a market. */
+export interface WalletPosition extends TokenPosition {
+  /** The outcome token. Parsed from the position id, not from a join. */
+  tokenId: string;
+}
+
+/**
+ * Everything one wallet bought, largest surviving position first.
+ *
+ * The token id is parsed out of the position id rather than read from the
+ * `market` relation. That relation is declared non-null in the schema and is
+ * dangling for a small number of positions, so traversing it fails the whole
+ * query with "Null value resolved for non-null field". The id is the wallet
+ * address followed by the decimal token id, so slicing it is both cheaper and
+ * more reliable than the join it replaces.
+ */
+export async function fetchWalletPositions(
+  address: string,
+  opts: { limit?: number; floor?: number; timeoutMs?: number } = {},
+): Promise<{ positions: WalletPosition[]; floor: number; truncated: boolean; failed?: string }> {
+  const { limit = 60, timeoutMs = 25_000 } = opts;
+
+  const who = safeAddress(address);
+  if (!who) return { positions: [], floor: 0, truncated: false, failed: 'malformed address' };
+
+  const ladder = opts.floor === undefined ? [1, 100, 1_000] : [opts.floor];
+  let lastError = 'subgraph did not answer';
+
+  for (const floor of ladder) {
+    const units = (BigInt(Math.max(0, Math.floor(floor))) * BigInt(UNIT)).toString();
+    const gql = `{ marketPositions(where: {user: "${who}", netQuantity_gt: "${units}"}, orderBy: netQuantity, orderDirection: desc, first: ${Math.min(Math.max(1, Math.floor(limit)), 200)}) { id quantityBought quantitySold netQuantity valueBought netValue } }`;
+
+    try {
+      const data = await query<{ marketPositions?: (RawPosition & { id?: string })[] }>(
+        JSON.stringify({ query: gql }),
+        timeoutMs,
+      );
+      const rows = data.marketPositions ?? [];
+      const positions: WalletPosition[] = [];
+
+      for (const raw of rows) {
+        const base = toPosition({ ...raw, user: { id: who } });
+        // The id is `0x` + 40 hex + the decimal token id, so the token starts
+        // at 42. Anything that does not parse as a token id is dropped rather
+        // than carried into a query.
+        const tokenId = safeTokenId(raw.id?.slice(42));
+        if (base && tokenId) positions.push({ ...base, tokenId });
+      }
+
+      return { positions, floor, truncated: rows.length >= limit };
+    } catch (err) {
+      lastError = redactMessage((err as Error).message ?? String(err));
+      if (!/timeout|timed out|statement/i.test(lastError)) break;
+    }
+  }
+
+  return { positions: [], floor: 0, truncated: false, failed: lastError.slice(0, 160) };
+}
+
+/** How a condition paid out, straight from the chain rather than from prices. */
+export interface Payout {
+  conditionId: string;
+  /** Numerators, index aligned with outcomes. Undefined until it resolves. */
+  numerators?: number[];
+  denominator?: number;
+  resolvedAt?: number;
+}
+
+/**
+ * Map outcome tokens back to their conditions, with the payout.
+ *
+ * `Condition.payouts` is the on-chain resolution, which beats reading it off
+ * prices: it survives a market being delisted and it represents a split
+ * resolution honestly, as numerators over a denominator, rather than as two
+ * prices that both look like losses.
+ *
+ * Queried as an entity list rather than through the position's `market` field
+ * so that a token with no MarketData is simply absent from the result instead
+ * of failing the request.
+ */
+export async function fetchTokenPayouts(
+  tokenIds: string[],
+  opts: { timeoutMs?: number } = {},
+): Promise<{ byToken: Map<string, Payout>; asked: number; found: number; failed?: string }> {
+  const clean = [...new Set(tokenIds.map((t) => safeTokenId(t)).filter((t): t is string => !!t))];
+  const byToken = new Map<string, Payout>();
+  if (clean.length === 0) return { byToken, asked: 0, found: 0 };
+
+  const gql = `{ marketDatas(where: {id_in: [${clean.map((t) => `"${t}"`).join(',')}]}, first: ${Math.min(clean.length, 1000)}) { id condition { id payoutNumerators payoutDenominator resolutionTimestamp } } }`;
+
+  try {
+    const data = await query<{
+      marketDatas?: {
+        id?: string;
+        condition?: {
+          id?: string;
+          payoutNumerators?: string[] | null;
+          payoutDenominator?: string | null;
+          resolutionTimestamp?: string | null;
+        } | null;
+      }[];
+    }>(JSON.stringify({ query: gql }), opts.timeoutMs ?? 25_000);
+
+    for (const row of data.marketDatas ?? []) {
+      const token = safeTokenId(row.id);
+      const conditionId = safeHash(row.condition?.id);
+      if (!token || !conditionId) continue;
+
+      const nums = row.condition?.payoutNumerators;
+      const den = row.condition?.payoutDenominator;
+
+      byToken.set(token, {
+        conditionId,
+        // Present only when it actually resolved. An unresolved condition has
+        // no payout, and coercing that to zero would report every open
+        // position as a loss.
+        numerators: Array.isArray(nums) && nums.length > 0 ? nums.map((n) => Number(n)) : undefined,
+        denominator: den ? Number(den) : undefined,
+        resolvedAt: row.condition?.resolutionTimestamp
+          ? Number(row.condition.resolutionTimestamp)
+          : undefined,
+      });
+    }
+
+    return { byToken, asked: clean.length, found: byToken.size };
+  } catch (err) {
+    return {
+      byToken,
+      asked: clean.length,
+      found: 0,
+      failed: redactMessage((err as Error).message ?? String(err)).slice(0, 160),
+    };
+  }
 }

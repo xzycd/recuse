@@ -179,3 +179,54 @@ export async function fetchContestedMarkets(
 
   return { markets, scanned: all.length };
 }
+
+/**
+ * Fetch many markets by condition id in one request.
+ *
+ * Gamma accepts `condition_ids` repeated, and returns every match: 26 asked and
+ * 26 returned when this was measured. That turns a wallet lookup from one
+ * request per market into one request per hundred, which is the difference
+ * between a usable command and a rude one.
+ *
+ * Both closed states are walked for the same reason `fetchMarket` walks them:
+ * Gamma defaults to open markets, and a wallet's history is mostly settled.
+ * Every record is still checked against what was asked for, because Gamma
+ * answers a filter it does not recognise with its default page.
+ */
+export async function fetchMarketsByCondition(
+  conditionIds: string[],
+): Promise<{ markets: Map<string, Market>; asked: number; missing: string[] }> {
+  const wanted = [...new Set(conditionIds.map((id) => id.toLowerCase()))].filter((id) =>
+    /^0x[0-9a-f]{64}$/.test(id),
+  );
+  const markets = new Map<string, Market>();
+  if (wanted.length === 0) return { markets, asked: 0, missing: [] };
+
+  for (let i = 0; i < wanted.length; i += PAGE_SIZE) {
+    const batch = wanted.slice(i, i + PAGE_SIZE);
+    const key = batch.map((id) => `condition_ids=${id}`).join('&');
+
+    for (const closed of [true, false]) {
+      // Everything found on the first pass is skipped on the second.
+      if (batch.every((id) => markets.has(id))) break;
+
+      try {
+        const page = await getJson<RawMarket[]>(
+          `${BASE}/markets?${key}&closed=${closed}&limit=${PAGE_SIZE}`,
+        );
+        if (!Array.isArray(page)) continue;
+
+        for (const market of page.map(toMarket)) {
+          // Verified against the request, never trusted because it came back.
+          if (market.conditionId && batch.includes(market.conditionId)) {
+            markets.set(market.conditionId, market);
+          }
+        }
+      } catch {
+        // Try the other closed state rather than failing every market at once.
+      }
+    }
+  }
+
+  return { markets, asked: wanted.length, missing: wanted.filter((id) => !markets.has(id)) };
+}

@@ -4,8 +4,10 @@
  */
 
 import { fetchHolders, sideForIndex } from '../sources/dataapi.js';
+import { fetchMarketsByCondition } from '../sources/gamma.js';
+import { buildLedger, type WalletLedger } from './wallet.js';
 import { chainConfigured } from '../sources/chain.js';
-import { fetchTokenPositions } from '../sources/subgraph.js';
+import { fetchTokenPayouts, fetchTokenPositions, fetchWalletPositions } from '../sources/subgraph.js';
 import {
   caveatsFor, concentration, observableSide, repeatPlayers, tradeConcentration, winningSide,
 } from './capture.js';
@@ -187,4 +189,54 @@ export async function tallyRepeatPlayers(
     marketsRead: outcomes.length,
     marketsFailed,
   };
+}
+
+/**
+ * Everything one wallet did, joined across three sources.
+ *
+ * Subgraph for what they bought, subgraph again for how each condition paid out
+ * on chain, and Gamma for the question text, the dispute history and, critically,
+ * the token-to-outcome mapping. The subgraph's own outcome index is null, so
+ * Gamma is the only source for which side a token is.
+ */
+export async function assessWallet(
+  address: string,
+  opts: { limit?: number; floor?: number } = {},
+): Promise<WalletLedger & { floor: number; truncated: boolean }> {
+  const scan = await fetchWalletPositions(address, opts);
+
+  if (scan.failed) {
+    return {
+      address, entries: [], won: 0, lost: 0, split: 0, open: 0,
+      gain: 0, contestedGain: 0, contested: 0,
+      caveats: [`positions could not be read: ${scan.failed}`],
+      floor: 0, truncated: false,
+    };
+  }
+
+  const payoutScan = await fetchTokenPayouts(scan.positions.map((p) => p.tokenId));
+  const conditions = [...new Set([...payoutScan.byToken.values()].map((p) => p.conditionId))];
+  const { markets, missing } = await fetchMarketsByCondition(conditions);
+
+  const ledger = buildLedger({
+    address,
+    positions: scan.positions,
+    payouts: payoutScan.byToken,
+    markets,
+  });
+
+  if (payoutScan.failed) {
+    ledger.caveats.unshift(`payouts could not be read: ${payoutScan.failed}`);
+  }
+  if (missing.length > 0) {
+    ledger.caveats.push(`${missing.length} markets were not in Gamma and are not counted`);
+  }
+  if (scan.floor > 0) {
+    ledger.caveats.push(`positions under ${scan.floor} tokens were not requested`);
+  }
+  if (scan.truncated) {
+    ledger.caveats.push('more positions exist than were requested, use --limit');
+  }
+
+  return { ...ledger, floor: scan.floor, truncated: scan.truncated };
 }
