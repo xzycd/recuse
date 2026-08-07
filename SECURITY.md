@@ -32,7 +32,7 @@ Every string from every source is filtered on the way in, in the source module, 
 
 **Responses are capped at 32MB.** `res.json()` buffers whatever arrives with no limit. The declared Content-Length is checked first, then the bytes are counted while reading, because the header is a claim and the stream is the fact.
 
-**`RECUSE_RPC_URL` must be http or https.** It is a URL the tool POSTs to and reads a JSON body back from. Without a scheme check, `file:` would turn a config value into a local file read.
+**`RECUSE_RPC_URL` must be http or https.** Without a scheme check, `file:` would turn a config value into a local file read the day the oracle layer starts POSTing to it. This check was written once and wired to a constructor nothing ever called, so it did not run at all until it was moved to the status function that every reading calls. An unwired defence reads exactly like a working one, which is the second time that has cost time here, so the check now has tests that fail if it stops running.
 
 **Values interpolated into URLs and queries are revalidated at the interpolation site**, not trusted from wherever they were produced. Condition ids must be 32 byte hashes, addresses must be 20 bytes, token ids must be plain decimal integers under 79 digits.
 

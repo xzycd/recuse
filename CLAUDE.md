@@ -19,10 +19,13 @@ src/
     wallet.ts     one wallet's ledger, priced from the on-chain payout. pure
     rank.ts       sort order, filtering, viewport. pure
     watch.ts      what counts as a resolution moving. pure
+    recall.ts     what moved since the last radar run. pure, reuses watch.ts
+    queue.ts      lifecycles that never terminated, and how long. pure
+    ledger.ts     the event log summarised. pure
     update.ts     version check. checks and prints, never installs
     assess.ts     assembles one answer from every source (does I/O)
     watcher.ts    one poll pass, and the loop (does I/O)
-    store.ts      the watchlist, the last snapshot, the event log, under ~/.recuse
+    store.ts      the watchlist, both snapshots, the event log, under ~/.recuse
     notify.ts     webhook delivery. the only outbound sink
   ui/
     theme.ts      five themes, colour depth detection, hex to escape
@@ -33,19 +36,28 @@ src/
     App.tsx       the ink radar
   cli.ts      arg parsing, command dispatch, --json on every path
 tools/
-  logo.mjs    regenerates assets/. run after changing the wordmark
+  logo.mjs          regenerates assets/. run after changing the wordmark
+  site.mjs          builds site/, flat HTML, no backend and no client JS
+  housekeeping.mjs  the house rules, checked. run by CI
+.github/workflows/
+  ci.yml      build, test and check on node 20 and 22
+  site.yml    nightly site build, publishes to Pages
 ```
 
-`core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/wallet.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
+`core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/recall.ts`, `core/queue.ts`, `core/ledger.ts`, `core/wallet.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
 
 ## Commands
 
 ```sh
-npm test          # 219 tests, no network, sub-second
+npm test          # 277 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
+npm run check     # the house rules below, enforced
+npm run site      # regenerate site/ from live data, needs a build first
 node tools/logo.mjs   # regenerate assets/banner.svg and assets/mark.svg
 ```
+
+CI runs `build`, `test` and `check` on Node 20 and 22 for every push and pull request. The site rebuilds nightly and publishes to Pages, and refuses to publish a snapshot with fewer than five pages, because a scan that returned nothing is a failed scan rather than an empty day.
 
 ## Testing policy
 
@@ -112,9 +124,10 @@ Three tells survive the obvious checks, so scrub them deliberately:
 Before pushing:
 
 ```sh
-git log --format='%B' | grep -ciE '^(co-authored-by|generated with)'   # must be 0
-grep -rn '—' README.md DNA.md CLAUDE.md src/                           # must be empty
+npm run check
 ```
+
+That is `tools/housekeeping.mjs`, and CI runs it too. It checks prose files for em dashes and emoji, source comments for em dashes, and the commit log for attribution trailers. It skips fenced code blocks deliberately: the renderers use `—` as a no-data glyph in a column, the README shows sample output containing it, and this file documents the check. A flat grep flags all three, and a check that cries wolf gets deleted.
 
 ## Handing off
 
@@ -140,3 +153,9 @@ A running log. One line each, added when something cost real time to find out an
 - The subgraph's `outcomeIndex` is null everywhere, and `Number(null)` is 0. Any absent numeric coerced with `Number` becomes a real-looking answer. Check for null before coercing, always.
 - `MarketPosition.market` is non-null in the schema and dangles on real records, so traversing it fails the whole query. The token id is the position id after character 42.
 - The radar drew every row and overflowed any terminal shorter than the list. Anything that renders a list needs a viewport.
+- The evidence tier was built from `Boolean(process.env.RECUSE_RPC_URL)` rather than from what answered, so setting the variable to anything printed `positions+chain` over an empty actor list. Derive a claim about evidence from the data you got back, never from configuration.
+- That also meant `safeEndpoint` never ran, because it lived in a constructor nothing constructs. Second time here. A defence needs a test that fails when it stops being called, not just a call site.
+- The radar and the watcher cannot share `seen.json`. A radar run would write baselines for markets the daemon never polled, and the daemon stays quiet on a market's first move once it has a baseline. Two readers, two files.
+- A full address clipped to fit a narrow column reads like an identifier and cannot be checked. Abbreviate the whole column or none of it.
+- Gamma serves `closedTime` as `2025-07-09 00:30:39+00`: a space instead of the T, and a two digit offset where ISO wants four. `new Date` returns Invalid Date, and an unparsed clock reads as "no deadline recorded" rather than as an error. Repair both defects or lose the field silently.
+- The CLOB serves no price history for a settled market. Zero of six checked returned a point, at any interval or explicit timestamp range. Anything wanting price movement against the lifecycle is off the table, and settled markets are the only interesting ones.

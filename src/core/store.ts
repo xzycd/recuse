@@ -16,7 +16,7 @@
  * seen.json would silently re-baseline every market it contains.
  */
 
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { safeHash, safeText } from './safe.js';
@@ -38,6 +38,16 @@ export const paths = {
   watchlist: () => join(home(), 'watchlist.json'),
   seen: () => join(home(), 'seen.json'),
   events: () => join(home(), 'events.jsonl'),
+  /**
+   * The radar's own snapshot, deliberately not `seen.json`.
+   *
+   * Sharing one file would let a plain `recuse` run write baselines for markets
+   * the watcher never polled, and the watcher decides whether to report an
+   * event by whether it has a baseline. The daemon would then stay quiet about
+   * the first real move on every market the radar happened to scan first. Two
+   * readers with different jobs get two files.
+   */
+  radar: () => join(home(), 'radar.json'),
 };
 
 async function ensureHome(): Promise<void> {
@@ -122,8 +132,8 @@ export interface SeenState {
   markets: Record<string, Seen>;
 }
 
-export async function readSeen(): Promise<SeenState> {
-  const raw = await readJson<Partial<SeenState>>(paths.seen(), {});
+async function readSnapshots(path: string): Promise<SeenState> {
+  const raw = await readJson<Partial<SeenState>>(path, {});
   const markets: Record<string, Seen> = {};
 
   for (const [key, value] of Object.entries(raw.markets ?? {})) {
@@ -136,7 +146,7 @@ export async function readSeen(): Promise<SeenState> {
   return { baselineAt: raw.baselineAt, markets };
 }
 
-export async function writeSeen(state: SeenState): Promise<void> {
+async function writeSnapshots(path: string, state: SeenState): Promise<void> {
   const entries = Object.entries(state.markets);
 
   // Evict the least recently polled once over the cap. Discovery walks a moving
@@ -147,9 +157,26 @@ export async function writeSeen(state: SeenState): Promise<void> {
       : entries.sort((a, b) => (b[1].at ?? '').localeCompare(a[1].at ?? '')).slice(0, MAX_SEEN);
 
   await writeAtomic(
-    paths.seen(),
+    path,
     `${JSON.stringify({ baselineAt: state.baselineAt, markets: Object.fromEntries(kept) })}\n`,
   );
+}
+
+export async function readSeen(): Promise<SeenState> {
+  return readSnapshots(paths.seen());
+}
+
+export async function writeSeen(state: SeenState): Promise<void> {
+  await writeSnapshots(paths.seen(), state);
+}
+
+/** The radar's last reading. Same shape as the watcher's, different file. */
+export async function readRadar(): Promise<SeenState> {
+  return readSnapshots(paths.radar());
+}
+
+export async function writeRadar(state: SeenState): Promise<void> {
+  await writeSnapshots(paths.radar(), state);
 }
 
 /**
@@ -175,12 +202,55 @@ export async function appendEvents(events: WatchEvent[]): Promise<void> {
  * Streams nothing and holds the file in memory, which is fine: a year of
  * disputes at the observed rate is a few megabytes.
  */
-export async function readEvents(limit = 50): Promise<{ events: WatchEvent[]; skipped: number }> {
+/**
+ * How much of the log we are willing to hold in memory at once.
+ *
+ * The same reasoning as the 32MB cap on HTTP bodies, applied to the one file
+ * this tool writes without bound. A watcher left running with `--discover` is
+ * the only way to get here, so this is robustness rather than a defence, but
+ * `recuse ledger` should not be the command that kills the machine after a
+ * year of faithful logging.
+ */
+const MAX_LOG_BYTES = 64 * 1024 * 1024;
+
+export interface EventLog {
+  events: WatchEvent[];
+  /** Lines that would not parse. */
+  skipped: number;
+  /** Bytes on disk, so a caller can say what it did not read. */
+  bytes: number;
+  /** True when only the tail was read. Never a partial log presented as whole. */
+  truncated: boolean;
+}
+
+export async function readEventLog(max = MAX_LOG_BYTES): Promise<EventLog> {
+  let bytes = 0;
   let body: string;
+
   try {
-    body = await readFile(paths.events(), 'utf8');
+    bytes = (await stat(paths.events())).size;
+
+    if (bytes > max) {
+      // Read the tail rather than the head: the recent past is what anyone is
+      // asking about, and a log read from the front would summarise history
+      // that has already scrolled out of relevance.
+      const handle = await open(paths.events(), 'r');
+      try {
+        const buffer = Buffer.alloc(max);
+        await handle.read(buffer, 0, max, bytes - max);
+        body = buffer.toString('utf8');
+      } finally {
+        await handle.close();
+      }
+      // The first line is almost certainly cut in half by the seek. Dropping it
+      // is correct; counting it as unreadable would be blaming the writer for
+      // our own offset.
+      body = body.slice(body.indexOf('\n') + 1);
+    } else {
+      body = await readFile(paths.events(), 'utf8');
+    }
   } catch {
-    return { events: [], skipped: 0 };
+    return { events: [], skipped: 0, bytes: 0, truncated: false };
   }
 
   const events: WatchEvent[] = [];
@@ -196,5 +266,11 @@ export async function readEvents(limit = 50): Promise<{ events: WatchEvent[]; sk
     }
   }
 
+  return { events, skipped, bytes, truncated: bytes > max };
+}
+
+/** The most recent events, newest first. */
+export async function readEvents(limit = 50): Promise<{ events: WatchEvent[]; skipped: number }> {
+  const { events, skipped } = await readEventLog();
   return { events: events.reverse().slice(0, limit), skipped };
 }

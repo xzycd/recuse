@@ -3,10 +3,10 @@
  * sources actually answered.
  */
 
-import { fetchHolders, sideForIndex } from '../sources/dataapi.js';
+import { fetchDisplayNames, fetchHolders, sideForIndex } from '../sources/dataapi.js';
 import { fetchMarketsByCondition } from '../sources/gamma.js';
 import { buildLedger, type WalletLedger } from './wallet.js';
-import { chainConfigured } from '../sources/chain.js';
+import { chainNote } from '../sources/chain.js';
 import { fetchTokenPayouts, fetchTokenPositions, fetchWalletPositions } from '../sources/subgraph.js';
 import {
   caveatsFor, concentration, observableSide, repeatPlayers, tradeConcentration, winningSide,
@@ -29,6 +29,13 @@ export interface AssessOptions {
    */
   winners?: boolean;
   winnerLimit?: number;
+  /**
+   * Put display names to the winning wallets. One request per wallet, so it is
+   * off on the radar, where it would multiply by the number of rows, and on for
+   * `winners`, which is the one surface where a list of bare addresses is the
+   * output rather than a column in it.
+   */
+  winnerNames?: boolean;
 }
 
 /** Which CLOB token id represents a side, using the market's own labels. */
@@ -74,6 +81,7 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
   let winnersFailed: string | undefined;
   let winnerFloor: number | undefined;
   let winnersTruncated = false;
+  let namesFailed: number | undefined;
 
   if (opts.winners && won && winToken) {
     const scan = await fetchTokenPositions(winToken, { limit: winnerLimit });
@@ -83,6 +91,17 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
       winners = scan.positions.map((p) => ({
         address: p.address, bought: p.bought, net: p.net, spent: p.spent, netSpent: p.netSpent,
       }));
+
+      if (opts.winnerNames && winners.length > 0) {
+        const named = await fetchDisplayNames(winners.map((w) => w.address));
+        winners = winners.map((w) => {
+          const name = named.byAddress.get(w.address);
+          return name ? { ...w, name } : w;
+        });
+        // Distinguishes "these wallets are unnamed" from "we could not ask".
+        if (named.failed > 0) namesFailed = named.failed;
+      }
+
       winnerConc = tradeConcentration(winners, won, scan.floor, topN);
       winnerFloor = scan.floor;
       winnersTruncated = scan.truncated;
@@ -91,16 +110,15 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
     winnersFailed = 'market has no usable token id';
   }
 
-  const tier: EvidenceTier = [
-    'positions',
-    winnerConc ? 'trades' : '',
-    chainConfigured() ? 'chain' : '',
-  ]
-    .filter(Boolean)
-    .join('+') as EvidenceTier;
+  // What was read, not what was configured. Deriving the tier from an
+  // environment variable meant setting RECUSE_RPC_URL to anything at all, a
+  // file: URL included, upgraded every reading to positions+chain while
+  // `actors` stayed empty and no oracle request was ever made. The tier is the
+  // one claim this tool makes about its own evidence, so it is now assembled
+  // only from sources that answered.
+  const tier: EvidenceTier = winnerConc ? 'positions+trades' : 'positions';
 
   const caveats = caveatsFor({
-    tier,
     holderCount: holders.length,
     // The endpoint groups by outcome token, so a full page on either side
     // means there is more book than we were shown.
@@ -111,6 +129,12 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
     winnersTruncated,
   });
 
+  if (namesFailed) {
+    caveats.push(`${namesFailed} winner names could not be looked up and show as addresses`);
+  }
+
+  // Ahead of the reading-specific caveats, because it applies to all of them.
+  caveats.unshift(chainNote());
   if (holdersFailed) caveats.unshift('holder lookup failed for this market');
   if (!observable) caveats.push('no prices: cannot tell which side is which');
 
@@ -120,7 +144,8 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
     concentration: conc,
     winnerConcentration: winnerConc,
     winners,
-    // Populated only when the chain layer is configured and reachable.
+    // Always empty. The chain layer is not wired in, and these stay in the
+    // shape so the JSON contract does not change when it is.
     actors: [],
     conflicts: [],
     tier,
@@ -214,6 +239,10 @@ export async function assessWallet(
     };
   }
 
+  // One request, for the header of the whole view. Best effort: a wallet with
+  // no name is the common case and is not worth failing a ledger over.
+  const named = await fetchDisplayNames([address]).catch(() => undefined);
+
   const payoutScan = await fetchTokenPayouts(scan.positions.map((p) => p.tokenId));
   const conditions = [...new Set([...payoutScan.byToken.values()].map((p) => p.conditionId))];
   const { markets, missing } = await fetchMarketsByCondition(conditions);
@@ -238,5 +267,10 @@ export async function assessWallet(
     ledger.caveats.push('more positions exist than were requested, use --limit');
   }
 
-  return { ...ledger, floor: scan.floor, truncated: scan.truncated };
+  return {
+    ...ledger,
+    name: named?.byAddress.get(address.trim().toLowerCase()),
+    floor: scan.floor,
+    truncated: scan.truncated,
+  };
 }

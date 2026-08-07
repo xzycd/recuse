@@ -155,35 +155,35 @@ describe('repeatPlayers', () => {
 });
 
 describe('caveatsFor', () => {
-  it('always flags a positions-only reading', () => {
-    const c = caveatsFor({ tier: 'positions', holderCount: 20, holdersTruncated: false, settled: true });
-    expect(c[0]).toMatch(/RECUSE_RPC_URL/);
+  it('says nothing about the oracle, which is not its question', () => {
+    const c = caveatsFor({ holderCount: 20, holdersTruncated: false, settled: true });
+    expect(c.join(' ')).not.toMatch(/RECUSE_RPC_URL/);
   });
 
   it('always explains that a settled market hides its winners', () => {
     const c = caveatsFor({
-      tier: 'positions+chain', holderCount: 20, holdersTruncated: false, settled: true,
+      holderCount: 20, holdersTruncated: false, settled: true,
     });
     expect(c.join(' ')).toMatch(/winners redeemed/);
   });
 
   it('flags a truncated holder list so shares are not read as absolute', () => {
     const c = caveatsFor({
-      tier: 'positions+chain', holderCount: 100, holdersTruncated: true, settled: true,
+      holderCount: 100, holdersTruncated: true, settled: true,
     });
     expect(c.join(' ')).toMatch(/truncated/);
   });
 
   it('flags an unsettled market', () => {
     const c = caveatsFor({
-      tier: 'positions+chain', holderCount: 5, holdersTruncated: false, settled: false,
+      holderCount: 5, holdersTruncated: false, settled: false,
     });
     expect(c.join(' ')).toMatch(/not settled/);
   });
 
   it('flags an empty holder list', () => {
     const c = caveatsFor({
-      tier: 'positions+chain', holderCount: 0, holdersTruncated: false, settled: true,
+      holderCount: 0, holdersTruncated: false, settled: true,
     });
     expect(c.join(' ')).toMatch(/no holders/);
   });
@@ -242,23 +242,16 @@ describe('winningSide', () => {
 describe('caveatsFor, winning side', () => {
   it('distinguishes not read from read and empty', () => {
     const failed = caveatsFor({
-      tier: 'positions', holderCount: 5, holdersTruncated: false, settled: true,
+      holderCount: 5, holdersTruncated: false, settled: true,
       winnersFailed: 'statement timeout',
     });
     expect(failed.some((c) => c.includes('not rebuilt'))).toBe(true);
 
     const read = caveatsFor({
-      tier: 'positions+trades', holderCount: 5, holdersTruncated: false, settled: true,
+      holderCount: 5, holdersTruncated: false, settled: true,
       winnerFloor: 1000,
     });
     expect(read.some((c) => c.includes('omits positions under 1000'))).toBe(true);
     expect(read.some((c) => c.includes('not rebuilt'))).toBe(false);
-  });
-
-  it('drops the chain caveat once chain data is present', () => {
-    const withChain = caveatsFor({
-      tier: 'positions+trades+chain', holderCount: 5, holdersTruncated: false, settled: true,
-    });
-    expect(withChain.some((c) => c.includes('RECUSE_RPC_URL'))).toBe(false);
   });
 });

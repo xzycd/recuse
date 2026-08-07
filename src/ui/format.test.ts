@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { clip, count, meter, money, padEnd, padStart, pct, until, widthOf } from './format.js';
+import {
+  clip, count, label, meter, money, padEnd, padStart, pct, shortAddress, until, widthOf,
+} from './format.js';
 
 describe('clip', () => {
   it('marks that something was cut', () => {
@@ -88,5 +90,47 @@ describe('until', () => {
 
   it('has a placeholder for a market with no clock', () => {
     expect(until(undefined, now)).toBe('—');
+  });
+});
+
+describe('label', () => {
+  const ADDR = '0x614f8c216086a1b7eead36b89b456938406d3b8a';
+
+  it('never lets a chosen name replace the address it is a claim about', () => {
+    // The whole point. A wallet that calls itself another wallet's address, or
+    // "Polymarket", still renders next to the address the row is really about.
+    const out = label('0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef', ADDR, 30, true);
+    expect(out).toMatch(/0x614f…3b8a$/);
+  });
+
+  it('keeps the full address when the column can hold one', () => {
+    expect(label(undefined, ADDR, 44, false)).toBe(ADDR);
+  });
+
+  it('abbreviates rather than truncating, which would look like an id', () => {
+    const out = label(undefined, ADDR, 28, true);
+    expect(out).toBe('0x614f…3b8a');
+    expect(out).not.toMatch(/^0x614f8c216086a1b7eead36b89b4…$/);
+  });
+
+  it('fits the name and the address inside the column budget', () => {
+    for (const width of [14, 20, 28, 44]) {
+      expect(widthOf(label('NewDarkShark', ADDR, width, true))).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it('drops the name rather than the address when there is no room', () => {
+    expect(label('NewDarkShark', ADDR, 14, true)).toBe('0x614f…3b8a');
+  });
+
+  it('counts an astral name by code point, so the column does not shift', () => {
+    // Same class of bug as padEnd counting UTF-16 units: a name of surrogate
+    // pairs must not buy itself extra cells.
+    const wide = label('𝕏𝕏𝕏𝕏𝕏𝕏', ADDR, 24, true);
+    expect(widthOf(wide)).toBeLessThanOrEqual(24);
+  });
+
+  it('leaves a short address alone', () => {
+    expect(shortAddress('0x1234')).toBe('0x1234');
   });
 });

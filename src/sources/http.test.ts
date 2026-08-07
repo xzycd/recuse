@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { num, parseEmbeddedJson, readJsonCapped } from './http.js';
+import { num, numOrUndefined, parseEmbeddedJson, readJsonCapped } from './http.js';
 
 /** A Response whose body streams the given chunks, no network involved. */
 function streamed(chunks: string[], headers: Record<string, string> = {}): Response {
@@ -81,5 +81,31 @@ describe('num', () => {
     expect(num('abc')).toBe(0);
     expect(num(Number.NaN)).toBe(0);
     expect(num(undefined, 3)).toBe(3);
+  });
+});
+
+describe('numOrUndefined', () => {
+  // The rule this enforces: Number(null) is 0, and 0 is a real outcome index,
+  // a real payout and a real price. A fallback here turns an absent field into
+  // a confident wrong answer, which is the subgraph bug in DNA.md.
+  it('refuses to invent a zero', () => {
+    expect(numOrUndefined(null)).toBeUndefined();
+    expect(numOrUndefined(undefined)).toBeUndefined();
+    expect(numOrUndefined('')).toBeUndefined();
+    expect(numOrUndefined('   ')).toBeUndefined();
+    expect(numOrUndefined({})).toBeUndefined();
+  });
+
+  it('keeps a real zero, which is the whole difficulty', () => {
+    expect(numOrUndefined(0)).toBe(0);
+    expect(numOrUndefined('0')).toBe(0);
+  });
+
+  it('takes Gamma numeric strings and rejects unparseable ones', () => {
+    expect(numOrUndefined('1.5')).toBe(1.5);
+    expect(numOrUndefined(2)).toBe(2);
+    expect(numOrUndefined('abc')).toBeUndefined();
+    expect(numOrUndefined(Number.NaN)).toBeUndefined();
+    expect(numOrUndefined(Number.POSITIVE_INFINITY)).toBeUndefined();
   });
 });

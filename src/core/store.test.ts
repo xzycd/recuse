@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  addToWatchlist, appendEvents, paths, readEvents, readSeen, readWatchlist,
+  addToWatchlist, appendEvents, paths, readEventLog, readEvents, readSeen, readWatchlist,
   removeFromWatchlist, writeSeen,
 } from './store.js';
 import type { Seen, WatchEvent } from './watch.js';
@@ -164,5 +164,42 @@ describe('event log', () => {
   it('honours the limit', async () => {
     await appendEvents([event(), event(), event(), event()]);
     expect((await readEvents(2)).events).toHaveLength(2);
+  });
+});
+
+describe('readEventLog, oversized', () => {
+  it('reads the tail and says so rather than presenting a slice as the log', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'recuse-log-'));
+    process.env.RECUSE_HOME = dir;
+
+    // 400 events, then read with a cap that only fits the last handful.
+    const events = Array.from({ length: 400 }, (_, i) => ({
+      at: `2026-08-07T00:00:${String(i % 60).padStart(2, '0')}.000Z`,
+      kind: 'disputed',
+      conditionId: `0x${String(i).padStart(64, '0')}`,
+      slug: `m${i}`,
+      question: `question ${i}`,
+      rounds: 1,
+      previousRounds: 0,
+      phase: 'in-dispute',
+      steps: ['proposed', 'disputed'],
+      pool: 1000,
+      origin: 'discovery',
+    }));
+    await appendEvents(events as never);
+
+    const whole = await readEventLog();
+    expect(whole.truncated).toBe(false);
+    expect(whole.events).toHaveLength(400);
+
+    const tail = await readEventLog(2_000);
+    expect(tail.truncated).toBe(true);
+    expect(tail.events.length).toBeGreaterThan(0);
+    expect(tail.events.length).toBeLessThan(400);
+    // The seek lands mid-line. That half line is dropped, not counted as
+    // corrupt: it is our offset that cut it, not the writer.
+    expect(tail.skipped).toBe(0);
+    // What survived is the end of the log, not the beginning.
+    expect(tail.events.at(-1)?.slug).toBe('m399');
   });
 });

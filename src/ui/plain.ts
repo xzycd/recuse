@@ -12,9 +12,13 @@
  */
 
 import {
-  accent, bold, clip, count, dim, meter, money, padEnd, padStart, paintRounds, pct, rule, until,
+  accent, bold, clip, count, dim, label, meter, money, padEnd, padStart, paintRounds, pct, rule,
+  until,
 } from './format.js';
 import { formatSteps } from '../core/dispute.js';
+import { winnerMoney } from '../core/capture.js';
+import { waited, type Pending, type QueueScan } from '../core/queue.js';
+import { span, type LedgerSummary } from '../core/ledger.js';
 import type { Style } from './format.js';
 import type { Assessment, Concentration, RepeatPlayer, Winner } from '../types.js';
 import type { WatchEvent } from '../core/watch.js';
@@ -55,6 +59,15 @@ export function renderRadar(
     scanned: number;
     hidden: number;
     contestedTotal: number;
+    /**
+     * What this reading stood on, passed in rather than inferred from a tier
+     * string. The renderer used to decide this by searching the tier for the
+     * substring "chain", which made a display decision the authority on an
+     * evidence question.
+     */
+    evidence?: string;
+    /** What moved since the last run, already worded by core/recall.ts. */
+    recall?: string;
     /** Printed under the table when a newer version exists. */
     notice?: string;
   },
@@ -113,10 +126,11 @@ export function renderRadar(
     lines.push(dim(`${meta.hidden} markets hidden, never contested. --all to include them.`, style));
   }
 
-  if (!(assessments[0]?.tier ?? '').includes('chain')) {
-    lines.push(
-      dim('positions only, proposer and disputer unread. set RECUSE_RPC_URL to read them.', style),
-    );
+  if (meta.recall) lines.push(dim(meta.recall, style));
+
+  const tier = assessments[0]?.tier;
+  if (tier || meta.evidence) {
+    lines.push(dim([tier, meta.evidence].filter(Boolean).join('. '), style));
   }
 
   if (meta.notice) lines.push(dim(meta.notice, style));
@@ -171,6 +185,20 @@ export function renderMarket(a: Assessment, style: Style): string {
       `${padEnd('  top buyers', 14)}${meter(wc.topShare)} ${pct(wc.topShare)} ` +
         dim(`(${wc.topN} of ${wc.holderCount} wallets, ${count(wc.topSize)} of ${count(wc.totalSize)} tokens)`, style),
     );
+
+    const m = a.winners ? winnerMoney(a.winners) : undefined;
+    if (m) {
+      // Arithmetic. Every held token on the winning side redeemed for a dollar,
+      // so this is the difference between two sums and not a model.
+      lines.push(
+        `${padEnd('  they paid', 14)}${money(m.paid)} ` +
+          dim(`for ${count(m.tokens)} tokens that redeemed for ${money(m.redeemed)}`, style),
+      );
+      lines.push(
+        `${padEnd('  net', 14)}${money(m.gain)} ` +
+          dim(`across ${m.wallets} wallets read`, style),
+      );
+    }
   }
 
   if (a.market.resolutionSource) {
@@ -274,15 +302,21 @@ export function renderWinners(a: Assessment, winners: Winner[], style: Style): s
     return lines.join('\n');
   }
 
-  // The address is the only identity here. The subgraph has no display names,
-  // and inventing a blank column to hold the ones it does not have would just
-  // push the numbers off the right of an 80 column terminal.
+  // The subgraph has no display names, so these are joined in from the data
+  // API's activity records, which is the only place a redeemed wallet is still
+  // named. A name never replaces the address: it is chosen by the account and
+  // nothing stops one calling itself another account's address, so the anchor
+  // stays on screen and the full form stays in --json.
   const addrW = Math.min(44, Math.max(14, style.width - 52));
+  const named = winners.some((w) => w.name);
+  // 42 is a full address. Below that, or once names need room beside them,
+  // the whole column abbreviates rather than truncating some rows and not others.
+  const short = named || addrW < 42;
   const total = wc?.totalSize ?? 0;
 
   lines.push(
     dim(
-      padEnd('ADDRESS', addrW) +
+      padEnd(named ? 'WHO' : 'ADDRESS', addrW) +
         padStart('SHARE', 7) + padStart('BOUGHT', 9) + padStart('HELD', 9) +
         padStart('PAID', 9) + padStart('AVG', 6) + padStart('GAIN', 9),
       style,
@@ -303,7 +337,7 @@ export function renderWinners(a: Assessment, winners: Winner[], style: Style): s
     const share = total > 0 ? w.net / total : 0;
 
     lines.push(
-      padEnd(w.address, addrW) +
+      padEnd(label(w.name, w.address, addrW, short), addrW) +
         padStart(pct(share), 7) +
         padStart(count(w.bought), 9) +
         padStart(count(w.net), 9) +
@@ -484,6 +518,7 @@ function signed(n: number): string {
 export function renderWallet(
   ledger: {
     address: string;
+    name?: string;
     entries: {
       question: string; side: string; rounds: number; net: number; cost: number;
       gain?: number; payout?: number; resolved: boolean;
@@ -495,7 +530,11 @@ export function renderWallet(
 ): string {
   const lines: string[] = [];
 
-  lines.push(bold(ledger.address, style));
+  // The address leads, always. A name is chosen by the account and the address
+  // is what every row below joins on.
+  lines.push(
+    bold(ledger.address, style) + (ledger.name ? dim(`  ${ledger.name}`, style) : ''),
+  );
 
   const resolved = ledger.won + ledger.lost + ledger.split;
   if (resolved === 0 && ledger.open === 0) {
@@ -561,6 +600,207 @@ export function renderWallet(
     dim('from trades, not balances, so positions that redeemed are still counted.', style),
   );
   for (const c of ledger.caveats) lines.push(dim(`  · ${c}`, style));
+
+  return lines.join('\n');
+}
+
+/**
+ * What has not finished, longest wait first.
+ *
+ * The counts under the table are the point as much as the rows are. A list of
+ * 40 unfinished markets means nothing without how many were examined and how
+ * many of those never reached the oracle at all.
+ */
+export function renderQueue(scan: QueueScan, rows: Pending[], style: Style): string {
+  const lines: string[] = [];
+  const w = style.width;
+
+  lines.push(bold('in the oracle', style));
+  lines.push(
+    dim('markets whose resolution record has not reached a terminal step', style),
+  );
+  lines.push(rule(style));
+
+  if (rows.length === 0) {
+    lines.push(dim(`nothing pending in ${scan.scanned} markets examined.`, style));
+    return lines.join('\n');
+  }
+
+  const showPool = w >= 72;
+  const nameW = Math.max(20, w - (8 + 6 + 5 + (showPool ? 9 : 0) + 12));
+
+  lines.push(
+    dim(
+      padEnd('MARKET', nameW) +
+        padStart('WAITED', 8) +
+        padStart('RDS', 5) +
+        '  ' + padEnd('LIFECYCLE', 12) +
+        (showPool ? padStart('POOL', 9) : ''),
+      style,
+    ),
+  );
+
+  for (const p of rows) {
+    lines.push(
+      padEnd(p.market.question, nameW) +
+        padStart(waited(p.waited), 8) +
+        paintRounds(p.dispute.rounds, padStart(p.dispute.rounds > 0 ? `${p.dispute.rounds}×` : '·', 5), style) +
+        '  ' + dim(padEnd(clip(formatSteps(p.dispute.steps), 12), 12), style) +
+        (showPool ? padStart(money(p.market.volume), 9) : ''),
+    );
+  }
+
+  lines.push(rule(style));
+  lines.push(
+    dim(
+      `${scan.pending.length} pending of ${scan.scanned} examined. ` +
+        `${scan.finished} finished, ${scan.noLifecycle} never reached the oracle.`,
+      style,
+    ),
+  );
+  if (scan.undated > 0) {
+    lines.push(dim(`${scan.undated} have no deadline recorded and sort last.`, style));
+  }
+  // The honest caveat. A lifecycle that stopped short is not proof of a stall.
+  lines.push(
+    dim('a record that stops short may be a slow oracle or a feed that never appended.', style),
+  );
+
+  return lines.join('\n');
+}
+
+/**
+ * The event log, summarised.
+ *
+ * This is the one thing here that cannot be recomputed from a public endpoint,
+ * so the header leads with how much of it there is.
+ */
+export function renderLedger(s: LedgerSummary, style: Style): string {
+  const lines: string[] = [];
+  const w = style.width;
+
+  if (s.events === 0) {
+    return dim('no events recorded yet. run `recuse watch` and leave it running.', style);
+  }
+
+  const days = span(s);
+  lines.push(bold('the log', style));
+  lines.push(
+    dim(
+      `${s.events} events across ${s.markets} markets` +
+        (days === undefined ? '' : days < 1 ? ', all inside one day' : `, over ${Math.round(days)} days`),
+      style,
+    ),
+  );
+  if (s.first && s.last) {
+    lines.push(dim(`${s.first.slice(0, 16).replace('T', ' ')} to ${s.last.slice(0, 16).replace('T', ' ')}`, style));
+  }
+  lines.push(rule(style));
+
+  const kinds = Object.entries(s.byKind).sort((a, b) => b[1] - a[1]);
+  if (kinds.length > 0) {
+    lines.push(dim('what happened', style));
+    for (const [kind, n] of kinds) {
+      lines.push(`  ${padEnd(kind, 12)}${padStart(String(n), 6)}`);
+    }
+  }
+
+  if (s.busiest.length > 0) {
+    lines.push('');
+    lines.push(dim('moved most often', style));
+    const nameW = Math.max(20, w - 22);
+    for (const m of s.busiest) {
+      lines.push(
+        '  ' + padEnd(m.question, nameW) +
+          padStart(`${m.events}×`, 6) +
+          paintRounds(m.rounds, padStart(m.rounds > 0 ? `${m.rounds}d` : '·', 5), style),
+      );
+    }
+  }
+
+  if (s.unfinished.length > 0) {
+    lines.push('');
+    lines.push(dim('last seen unfinished', style));
+    const nameW = Math.max(20, w - 26);
+    for (const m of s.unfinished) {
+      lines.push(
+        '  ' + padEnd(m.question, nameW) +
+          padStart(m.lastKind, 11) +
+          dim(padStart(m.lastAt.slice(5, 10), 7), style),
+      );
+    }
+  }
+
+  lines.push(rule(style));
+  if (s.truncated) {
+    // The counts above are over the tail, not the log. Saying so is the whole
+    // difference between a summary and a wrong total.
+    lines.push(dim('log too large to read whole. everything above is its most recent part.', style));
+  }
+  if (s.skipped > 0) {
+    lines.push(dim(`${s.skipped} unreadable lines, from a process killed mid-append.`, style));
+  }
+  lines.push(
+    dim('append only, never rewritten. this file is the part nobody else is keeping.', style),
+  );
+
+  return lines.join('\n');
+}
+
+/**
+ * A market as a block you can paste into a chat.
+ *
+ * Deliberately not the table. This is sized for a phone-width chat window,
+ * carries no colour and no box drawing, and every share still arrives with its
+ * denominator, because the whole reason to paste one of these is to settle an
+ * argument and a number nobody can check settles nothing.
+ */
+export function renderCard(a: Assessment): string {
+  const lines: string[] = [];
+  const W = 58;
+
+  lines.push(clip(a.market.question, W));
+  lines.push('');
+
+  const rounds = a.dispute.rounds;
+  lines.push(
+    rounds > 0
+      ? `${rounds} dispute round${rounds === 1 ? '' : 's'}  ${formatSteps(a.dispute.steps)}  ${money(a.pool)} traded`
+      : `never contested  ${formatSteps(a.dispute.steps)}  ${money(a.pool)} traded`,
+  );
+
+  const c = a.concentration;
+  if (c && c.meaning === 'wiped') {
+    lines.push('');
+    lines.push(`${c.side} lost. ${count(c.totalSize)} tokens went to zero.`);
+    lines.push(
+      `  top ${c.topN} of ${c.holderCount} holders held ${pct(c.topShare)} of it`,
+    );
+  }
+
+  const wc = a.winnerConcentration;
+  if (wc) {
+    lines.push('');
+    lines.push(`${wc.side} won. ${count(wc.totalSize)} tokens, rebuilt from trades.`);
+    lines.push(
+      `  top ${wc.topN} of ${wc.holderCount} wallets bought ${pct(wc.topShare)} of it`,
+    );
+
+    const m = a.winners ? winnerMoney(a.winners) : undefined;
+    if (m) {
+      lines.push(`  they paid ${money(m.paid)} and redeemed ${money(m.redeemed)}`);
+    }
+    lines.push('');
+    lines.push('balances cannot see this side. winners redeem and leave.');
+  }
+
+  if (a.market.slug) {
+    lines.push('');
+    lines.push(`https://polymarket.com/event/${a.market.slug}`);
+  }
+
+  lines.push('');
+  lines.push(`${a.tier} · recuse market ${a.market.slug || a.market.conditionId}`);
 
   return lines.join('\n');
 }

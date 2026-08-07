@@ -147,6 +147,26 @@ export function parseEmbeddedJson<T>(value: unknown, fallback: T): T {
   }
 }
 
+/**
+ * A number, or undefined when the field was not there.
+ *
+ * `num` has a fallback and is right for a display quantity, where zero volume
+ * and absent volume look the same on a screen. This one is for fields whose
+ * absence changes the answer rather than the picture: an outcome index, a
+ * payout, a price. `Number(null)` is 0, and 0 is a real outcome index, so a
+ * missing one coerced through a fallback becomes a confident claim about which
+ * side somebody was on. That is not hypothetical here, it is the subgraph bug
+ * in DNA.md, and this exists so the same mistake has an obvious alternative.
+ */
+export function numOrUndefined(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
 /** Coerce Gamma's mix of numbers and numeric strings into a number. */
 export function num(value: unknown, fallback = 0): number {
   if (typeof value === 'number') return Number.isFinite(value) ? value : fallback;

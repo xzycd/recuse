@@ -9,13 +9,15 @@
  */
 
 import { disputeWeight } from './dispute.js';
+import { movementRank, type Movement } from './recall.js';
 import type { Assessment } from '../types.js';
 
-export const SORTS = ['rounds', 'pool', 'wiped', 'ends'] as const;
+export const SORTS = ['rounds', 'moved', 'pool', 'wiped', 'ends'] as const;
 export type SortMode = (typeof SORTS)[number];
 
 export const SORT_LABELS: Record<SortMode, string> = {
   rounds: 'most contested',
+  moved: 'moved most recently',
   pool: 'most money',
   wiped: 'most wiped out',
   ends: 'soonest deadline',
@@ -31,11 +33,28 @@ function wipedSize(a: Assessment): number {
   return c && c.meaning === 'wiped' ? c.totalSize : 0;
 }
 
-/** Sort a copy. The caller's array is never reordered underneath it. */
-export function sortAssessments(list: Assessment[], mode: SortMode): Assessment[] {
+/**
+ * Sort a copy. The caller's array is never reordered underneath it.
+ *
+ * `movement` is only consulted by the `moved` mode, and its absence is not an
+ * error: with no previous reading to diff against, "what moved" has no answer
+ * and the sort falls back to dispute weight rather than inventing an order.
+ */
+export function sortAssessments(
+  list: Assessment[],
+  mode: SortMode,
+  movement?: ReadonlyMap<string, Movement>,
+): Assessment[] {
   const out = [...list];
 
   switch (mode) {
+    case 'moved':
+      return out.sort(
+        (a, b) =>
+          movementRank(movement?.get(b.market.conditionId)) -
+            movementRank(movement?.get(a.market.conditionId)) ||
+          disputeWeight(b.dispute, b.pool) - disputeWeight(a.dispute, a.pool),
+      );
     case 'pool':
       return out.sort((a, b) => b.pool - a.pool);
     case 'wiped':

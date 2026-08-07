@@ -13,7 +13,7 @@
  */
 
 import type {
-  Concentration, EvidenceTier, Holder, Market, RepeatPlayer, Side, Winner,
+  Concentration, Holder, Market, RepeatPlayer, Side, Winner,
 } from '../types.js';
 
 /**
@@ -134,6 +134,35 @@ export function tradeConcentration(
   };
 }
 
+/**
+ * What the winning side put in and took out.
+ *
+ * Arithmetic, not an estimate, and that is the only reason this is allowed to
+ * exist. Every token held on the winning side of a settled market redeems for
+ * exactly one dollar, so `redeemed` is the token count and `gain` is the
+ * difference. Nothing here is modelled or inferred from a price.
+ *
+ * `wallets` is the denominator and travels with the rest, because this is a sum
+ * over the positions that came back above the subgraph's floor, not over every
+ * position that existed. Presented without it, the total reads like the whole
+ * winning side, which is exactly the mistake this module was written to stop.
+ */
+export function winnerMoney(winners: Winner[]): {
+  wallets: number;
+  tokens: number;
+  paid: number;
+  redeemed: number;
+  gain: number;
+} | undefined {
+  const held = winners.filter((w) => w.net > 0);
+  if (held.length === 0) return undefined;
+
+  const tokens = held.reduce((a, w) => a + w.net, 0);
+  const paid = held.reduce((a, w) => a + w.netSpent, 0);
+
+  return { wallets: held.length, tokens, paid, redeemed: tokens, gain: tokens - paid };
+}
+
 /** Which side won, for a settled market. Undefined while it is still live. */
 export function winningSide(market: Market): Side | undefined {
   const leading = leadingSide(market);
@@ -208,7 +237,6 @@ export function repeatPlayers(outcomes: MarketOutcome[], minAppearances = 2): Re
  * carries the same warnings and none of them can quietly drop one.
  */
 export function caveatsFor(opts: {
-  tier: EvidenceTier;
   holderCount: number;
   holdersTruncated: boolean;
   settled: boolean;
@@ -220,9 +248,10 @@ export function caveatsFor(opts: {
 }): string[] {
   const out: string[] = [];
 
-  if (!opts.tier.includes('chain')) {
-    out.push('no chain data: proposer and disputer identities unread (set RECUSE_RPC_URL)');
-  }
+  // The evidence tier used to be read here to decide whether to warn about
+  // missing oracle data. It belongs with the tier, in assess.ts, which is the
+  // only place that knows what actually answered. This module sees holders and
+  // winners and should not be inferring anything about a third source.
   if (opts.holderCount === 0) {
     out.push('no holders returned for this market');
   } else if (opts.holdersTruncated) {

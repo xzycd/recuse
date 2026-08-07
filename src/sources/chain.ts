@@ -1,9 +1,22 @@
 /**
  * The optional layer: reading Polygon for who proposed and who disputed.
  *
- * This is opt-in for a reason that took a while to find. Polymarket's markets
- * resolve through UMA's Managed Optimistic Oracle, and the proposer and
- * disputer addresses only exist in that contract's logs. Reading logs needs
+ * NOTHING IN THIS FILE IS WIRED INTO AN ASSESSMENT. `chainStatus` and
+ * `chainNote` below are the only exports anything calls. `Chain` is never
+ * constructed, `scanLogs` and `actorsInRange` are never reached, and no result
+ * this tool has ever printed stood on oracle evidence.
+ *
+ * That sentence is here because the opposite was true in the output for a
+ * while. `assess.ts` built its evidence tier from "is RECUSE_RPC_URL set"
+ * rather than from "did we read anything", so exporting the variable was enough
+ * to make every reading claim `positions+chain` while `actors` stayed empty.
+ * The scheme check in the constructor never ran either, since the constructor
+ * never ran, which made SECURITY.md's http-or-https claim true only on paper.
+ * Both are fixed by measuring what was read instead of what was configured.
+ *
+ * The constants are the part worth keeping. Polymarket's markets resolve
+ * through UMA's Managed Optimistic Oracle, and the proposer and disputer
+ * addresses only exist in that contract's logs. Reading logs needs
  * `eth_getLogs` over a block range, and the free public Polygon endpoints will
  * not serve one:
  *
@@ -11,11 +24,11 @@
  *   polygon.drpc.org                rejects ranges it advertises as supported
  *   1rpc.io/matic                   50 blocks
  *
- * At 50 blocks a window, covering a day of Polygon costs 860 requests. So the
- * default build does not pretend to have this data. Point RECUSE_RPC_URL at an
- * endpoint that will serve log ranges (any provider's free tier does) and
- * this layer turns on. Until then the tool says so, every time, rather than
- * showing a partial picture that looks complete.
+ * At 50 blocks a window, covering a day of Polygon costs 860 requests. The
+ * addresses and topic hashes below were decoded from live traffic rather than
+ * from documentation and are correct; the reading built on them is not
+ * finished. Until it is, the tool says the oracle is unread rather than
+ * implying that configuration alone bought anything.
  */
 
 import { redactMessage, safeEndpoint } from '../core/safe.js';
@@ -105,9 +118,54 @@ export interface ScanResult {
   blocksCovered: number;
 }
 
-/** Is the chain layer configured at all? */
-export function chainConfigured(): boolean {
-  return Boolean(process.env.RECUSE_RPC_URL);
+export interface ChainStatus {
+  /** RECUSE_RPC_URL is set to something. */
+  configured: boolean;
+  /**
+   * Whether any assessment in this build stands on oracle logs. Always false,
+   * and typed as false so a caller cannot branch on it becoming true without
+   * this file changing first.
+   */
+  reads: false;
+  /** Why the endpoint was refused, when it was. */
+  rejected?: string;
+}
+
+/**
+ * What the chain layer contributes right now, which is nothing.
+ *
+ * This is the only place RECUSE_RPC_URL is validated, and it is called on every
+ * assessment, so `safeEndpoint` now runs for real. It used to sit in the `Chain`
+ * constructor, which nothing constructs: an unwired defence reads exactly like
+ * a working one, and this is the second time that has happened here.
+ */
+export function chainStatus(): ChainStatus {
+  const url = process.env.RECUSE_RPC_URL;
+  if (!url) return { configured: false, reads: false };
+
+  try {
+    safeEndpoint(url);
+    return { configured: true, reads: false };
+  } catch (err) {
+    return { configured: true, reads: false, rejected: (err as Error).message };
+  }
+}
+
+/**
+ * One line saying what the oracle contributed to a reading.
+ *
+ * Travels as a caveat rather than as chrome, so `--json` carries it too. A user
+ * who set the variable and got silence would reasonably assume it worked.
+ */
+export function chainNote(): string {
+  const status = chainStatus();
+  if (status.rejected) {
+    return `RECUSE_RPC_URL ignored, ${status.rejected}. proposer and disputer unread`;
+  }
+  if (status.configured) {
+    return 'RECUSE_RPC_URL is set but unused: this build does not read the oracle yet, so proposer and disputer are unread';
+  }
+  return 'this build does not read the oracle, so proposer and disputer are unread';
 }
 
 export class Chain {

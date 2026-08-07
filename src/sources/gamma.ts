@@ -33,6 +33,8 @@ interface RawMarket {
   resolutionSource?: string;
   endDate?: string;
   umaEndDate?: string;
+  updatedAt?: string;
+  closedTime?: string;
   closed?: boolean;
   active?: boolean;
   negRisk?: boolean;
@@ -65,6 +67,11 @@ export function toMarket(raw: RawMarket): Market {
     resolutionSource: safeText(raw.resolutionSource) || undefined,
     endDate: safeText(raw.endDate, 40) || undefined,
     umaEndDate: safeText(raw.umaEndDate, 40) || undefined,
+    updatedAt: safeText(raw.updatedAt, 40) || undefined,
+    // Gamma serves this as `2025-07-09 00:30:39+00`, a space instead of the T
+    // and no milliseconds. Date parses it, but it is not ISO and nothing here
+    // should assume it is.
+    closedTime: safeText(raw.closedTime, 40) || undefined,
     closed: raw.closed === true,
     active: raw.active !== false,
     negRisk: raw.negRisk === true,
@@ -169,15 +176,28 @@ export async function fetchMarket(idOrSlug: string): Promise<Market | undefined>
 export async function fetchContestedMarkets(
   scan = 600,
 ): Promise<{ markets: Market[]; scanned: number }> {
+  const { markets, scanned } = await fetchBothStates(scan);
+  return { markets: markets.filter((m) => m.resolutionSteps.includes('disputed')), scanned };
+}
+
+/**
+ * Walk both closed states, because Gamma defaults to open markets.
+ *
+ * A settled market is invisible without `closed=true`, and the resolution
+ * lifecycle only exists on markets that reached the oracle, which are mostly
+ * settled. Anything scanning for lifecycle state has to ask for both halves or
+ * it is reading a sample it has quietly biased.
+ */
+export async function fetchBothStates(
+  scan = 600,
+): Promise<{ markets: Market[]; scanned: number }> {
   const [open, closed] = await Promise.all([
     fetchMarkets({ closed: false, limit: Math.floor(scan / 2) }),
     fetchMarkets({ closed: true, limit: Math.ceil(scan / 2) }),
   ]);
 
   const all = [...open, ...closed];
-  const markets = all.filter((m) => m.resolutionSteps.includes('disputed'));
-
-  return { markets, scanned: all.length };
+  return { markets: all, scanned: all.length };
 }
 
 /**
