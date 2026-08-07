@@ -206,3 +206,15 @@ writeFileSync(join(ROOT, 'assets/banner.svg'), banner());
 writeFileSync(join(ROOT, 'assets/mark.svg'), icon());
 writeFileSync(join(ROOT, 'assets/social.svg'), social());
 console.log('wrote assets/banner.svg, assets/mark.svg and assets/social.svg');
+
+// The PNG for GitHub's social preview has to be uploaded by hand, in Settings,
+// since the API does not expose it. To regenerate it on macOS:
+//
+//   sed 's|viewBox="0 0 1280 640" width="1280" height="640"|viewBox="0 -320 1280 1280" width="1280" height="1280"|' \
+//     assets/social.svg > /tmp/square.svg
+//   qlmanage -t -s 1280 -o /tmp /tmp/square.svg
+//   sips -c 640 1280 /tmp/square.svg.png --out assets/social-preview.png
+//
+// The square wrapper is not optional: qlmanage always renders into a square
+// canvas and fits by height, so a 2:1 image rendered directly comes out at
+// double scale with the right-hand third cut off.
