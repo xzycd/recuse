@@ -10,12 +10,17 @@
  * output containing it, and CLAUDE.md documents the check itself. All three are
  * inside fences. A flat grep flags all of them, and a check that cries wolf
  * gets deleted, which is worse than not having it.
+ *
+ * The reachability check further down follows the same principle for the same
+ * reason. It walks from the entry point rather than counting references, and it
+ * reports nothing on a clean tree.
  */
 
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { unreachable } from './reachable.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -78,6 +83,45 @@ for (const file of sources) {
       failures.push(`${file}:${i + 1}  em dash in a comment\n    ${line.trim()}`);
     }
   });
+}
+
+/*
+ * Code nothing can reach, which is the rule this repo has broken most often.
+ *
+ * `safeEndpoint` sat in a constructor nothing constructed and read as a working
+ * defence for weeks. The evidence tier claimed oracle data from a file that had
+ * never been wired in. Both survived review, both survived a grep, and the
+ * lesson written down after the first one, grep for call sites and not for
+ * definitions, did not prevent the second, because remembering to grep is not a
+ * check. This is.
+ *
+ * The analysis is in `reachable.mjs` so it can be tested against files built to
+ * be dead, rather than only against this repo on a day it happens to be clean.
+ */
+
+/**
+ * Where execution starts.
+ *
+ * Test files are deliberately not roots and not scanned. A symbol only a test
+ * can reach is a symbol the program cannot, and that is the case worth
+ * reporting rather than the case to excuse. Three passing tests were the reason
+ * the dead chain layer looked maintained.
+ */
+const ROOTS = ['src/cli.ts'];
+
+const sourceFiles = execFileSync('git', ['ls-files', 'src'], { cwd: ROOT, encoding: 'utf8' })
+  .split('\n')
+  .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
+
+const sourceText = Object.fromEntries(
+  sourceFiles.map((f) => [f, readFileSync(join(ROOT, f), 'utf8')]),
+);
+
+for (const { file, name } of unreachable(sourceText, ROOTS)) {
+  failures.push(
+    `${file}  ${name} is not reachable from ${ROOTS.join(' or ')}\n` +
+      '    finish it, wire it up, or delete it. git keeps whatever you delete.',
+  );
 }
 
 // Commit trailers. The repo carries one author and no tool attribution.
