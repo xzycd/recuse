@@ -7,9 +7,10 @@ dist/
 coverage/
 *.tsbuildinfo
 
-# Private working notes. Commercial thinking, pricing, and anything not ready
-# to be read by whoever finds the repo. Never committed.
+# Private working notes. Commercial thinking, pricing, session state, and
+# anything not ready to be read by whoever finds the repo. Never committed.
 notes/
+HANDOFF.md
 .recuse/
 scratch/
 *.local.md

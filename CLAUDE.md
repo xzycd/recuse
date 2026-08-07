@@ -116,6 +116,10 @@ git log --format='%B' | grep -ciE '^(co-authored-by|generated with)'   # must be
 grep -rn '—' README.md DNA.md CLAUDE.md src/                           # must be empty
 ```
 
+## Handing off
+
+`HANDOFF.md` is the first thing to read when picking this up and the last thing to touch before putting it down. Keep it to a page: what state it is in, what is next, and what would waste the next person's time. It is local and gitignored, so nothing in it has to be diplomatic. Update it at the end of every session, even a short one, and delete from it as freely as you add.
+
 ## Commits
 
 Lowercase, imperative, no emoji, no prefixes. Explain why in the body when the reason is not obvious from the diff, especially when live data changed your mind about something.
