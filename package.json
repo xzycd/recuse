@@ -1,0 +1,41 @@
+{
+  "name": "recuse",
+  "version": "0.1.0",
+  "description": "See who decides a Polymarket market, and what they own.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "recuse": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "ink": "^6.0.1",
+    "react": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.0"
+  },
+  "keywords": [
+    "polymarket",
+    "prediction-markets",
+    "uma",
+    "oracle",
+    "cli",
+    "tui"
+  ]
+}
