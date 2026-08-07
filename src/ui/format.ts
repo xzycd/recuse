@@ -2,53 +2,53 @@
  * Formatting primitives, shared by the plain renderer and the TUI so both
  * surfaces round, truncate and colour identically.
  *
- * Colour is spent on one thing: the dispute round count. Everything else is
- * monochrome. A table where four columns are coloured teaches the eye to
- * ignore colour, and then the one signal that mattered goes unread.
+ * Inside the data table, colour still carries exactly one signal: the dispute
+ * round count. Themes change what that ramp looks like and what the chrome
+ * around it looks like. They do not add a second coloured meaning to a column.
+ * A table where four things are coloured teaches the eye to ignore colour, and
+ * then the one signal that mattered goes unread.
  */
 
-const ESC = '[';
+import {
+  bolden, colourise, detectDepth, invert, resolveTheme, type ColourDepth, type Theme,
+} from './theme.js';
 
 export interface Style {
   colour: boolean;
   width: number;
+  theme: Theme;
+  depth: ColourDepth;
 }
 
 /** Honour NO_COLOR, a non-TTY pipe, and an explicit override, in that order. */
-export function detectStyle(opts: { colour?: boolean; width?: number } = {}): Style {
+export function detectStyle(opts: { colour?: boolean; width?: number; theme?: string } = {}): Style {
   const isTty = process.stdout.isTTY === true;
-  const noColour = process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== '';
+  const theme = resolveTheme(opts.theme);
+
+  // Piping is not the same as asking for monochrome, but it is the same in
+  // effect: escape codes in a file are noise, so the depth collapses to zero.
+  const wanted = opts.colour ?? isTty;
+  const depth = wanted ? detectDepth() : 0;
 
   return {
-    colour: opts.colour ?? (isTty && !noColour),
+    colour: depth > 0,
     // COLUMNS wins when set so the behaviour can be tested without a terminal.
     width: opts.width ?? (Number(process.env.COLUMNS) || process.stdout.columns || 80),
+    theme,
+    depth,
   };
 }
 
-const CODES = {
-  reset: '0',
-  dim: '2',
-  bold: '1',
-  red: '31',
-  yellow: '33',
-  green: '32',
-  cyan: '36',
-} as const;
-
-export function paint(text: string, code: keyof typeof CODES, style: Style): string {
-  if (!style.colour) return text;
-  return `${ESC}${CODES[code]}m${text}${ESC}${CODES.reset}m`;
-}
-
-export const dim = (t: string, s: Style) => paint(t, 'dim', s);
-export const bold = (t: string, s: Style) => paint(t, 'bold', s);
+export const dim = (t: string, s: Style) => colourise(t, s.theme.dim, s.depth);
+export const bold = (t: string, s: Style) => bolden(colourise(t, s.theme.accent, s.depth), s.depth);
+export const accent = (t: string, s: Style) => colourise(t, s.theme.accent, s.depth);
+export const body = (t: string, s: Style) => colourise(t, s.theme.text, s.depth);
+export const selected = (t: string, s: Style) => invert(t, s.depth);
 
 /** The one colour ramp in the tool: how many times a market was contested. */
 export function paintRounds(rounds: number, text: string, style: Style): string {
-  if (rounds === 0) return dim(text, style);
-  if (rounds === 1) return paint(text, 'yellow', style);
-  return paint(text, 'red', style);
+  const hex = style.theme.ramp[rounds === 0 ? 0 : rounds === 1 ? 1 : 2]!;
+  return colourise(text, hex, style.depth);
 }
 
 /** Compact money. Three significant figures is as much as anyone reads. */
@@ -84,20 +84,35 @@ export function meter(share: number): string {
   return '●'.repeat(filled) + '○'.repeat(3 - filled);
 }
 
-/** Truncate to a visible width, marking that something was cut. */
+/**
+ * Truncate to a visible width, marking that something was cut.
+ *
+ * Counts by code point rather than by UTF-16 unit. A market question containing
+ * an astral character would otherwise be cut mid-surrogate, and half a
+ * surrogate pair renders as a replacement box that also breaks the column it
+ * was supposed to fit.
+ */
 export function clip(text: string, width: number): string {
   if (width <= 0) return '';
-  if (text.length <= width) return text;
-  if (width <= 1) return text.slice(0, width);
-  return `${text.slice(0, width - 1)}…`;
+  const chars = [...text];
+  if (chars.length <= width) return text;
+  if (width <= 1) return chars.slice(0, width).join('');
+  return `${chars.slice(0, width - 1).join('')}…`;
+}
+
+/** Visible width in cells, on the same code point basis as `clip`. */
+export function widthOf(text: string): number {
+  return [...text].length;
 }
 
 export function padEnd(text: string, width: number): string {
-  return clip(text, width).padEnd(width);
+  const clipped = clip(text, width);
+  return clipped + ' '.repeat(Math.max(0, width - widthOf(clipped)));
 }
 
 export function padStart(text: string, width: number): string {
-  return clip(text, width).padStart(width);
+  const clipped = clip(text, width);
+  return ' '.repeat(Math.max(0, width - widthOf(clipped))) + clipped;
 }
 
 /** Time remaining, or how long ago. Never a raw timestamp in a dense table. */
@@ -116,5 +131,5 @@ export function until(deadline: Date | undefined, now = new Date()): string {
 
 /** A horizontal rule that fits the terminal. */
 export function rule(style: Style): string {
-  return dim('─'.repeat(Math.max(0, style.width)), style);
+  return colourise('─'.repeat(Math.max(0, style.width)), style.theme.rule, style.depth);
 }
