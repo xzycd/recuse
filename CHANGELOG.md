@@ -34,6 +34,16 @@ The detail pane and the card now show what the winning side paid and redeemed. E
 
 There is no `recuse replay`. The CLOB serves no price history for settled markets, zero of six checked at any interval, so showing price movement against the dispute lifecycle is not possible for the only markets worth showing it for.
 
+`npm run site` builds a flat HTML snapshot into `site/`: one page per contested market, permanent URLs, no backend, no database, no client JavaScript and no external requests. It imports the compiled engine rather than shelling out, so a page cannot drift from what the CLI prints. Every rule survives the port: shares carry denominators, the hidden count is on the index, the evidence tier is in every footer.
+
+The site needed its own escaping. `core/safe.ts` strips what a terminal acts on, and a browser acts on a different set, so `<` is inert on one and markup on the other. Neither pass replaces the other.
+
+CI builds and tests on Node 20 and 22 for every push and pull request. The site rebuilds nightly and refuses to publish a snapshot with fewer than five pages, because a scan that returned nothing is a failed scan rather than an empty day.
+
+`npm run check` is the house rules, enforced instead of remembered: em dashes and emoji in prose, em dashes in source comments, attribution trailers in the log. It skips fenced blocks and inline code, and it failed on its own source the first time CI ran it, which is the right way round.
+
+`recuse wallet` shows the account's display name beside its address. `readEventLog` caps at 64MB and reads the tail past that, saying it did.
+
 ## 0.4.0, 2026-08-07
 
 Added `recuse wallet <address>`. One wallet's whole record, disputed markets first, priced from the on-chain payout rather than from prices. It reads positions from trades, so wallets that redeemed and vanished from every balance-based tracker still show up. Measured on one address: 38 resolved markets, 11 of them disputed, `+$859K` net.
