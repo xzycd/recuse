@@ -1,5 +1,5 @@
 /**
- * Polymarket's Gamma API — the market catalogue and, more usefully, the
+ * Polymarket's Gamma API: the market catalogue and, more usefully, the
  * resolution lifecycle of every market.
  *
  * Public, unauthenticated, and the only place the dispute history is served
@@ -107,7 +107,7 @@ export async function fetchMarkets(query: MarketQuery = {}): Promise<Market[]> {
  * Does this record actually answer the question we asked?
  *
  * Gamma ignores query params it does not recognise and returns its default
- * page instead of an error — ask for `?conditionId=0x655e…` and you get twenty
+ * page instead of an error. Ask for `?conditionId=0x655e…` and you get twenty
  * unrelated markets, the first of which looks like a perfectly good answer.
  * Nothing in the response says the filter was dropped.
  *
@@ -124,7 +124,7 @@ export function matchesRequest(market: Market, idOrSlug: string): boolean {
  *
  * Gamma defaults to open markets, so a settled one is invisible unless
  * `closed=true` is set. Both are tried because the caller has no reason to
- * know which state a market is in — that is the thing they are asking about.
+ * know which state a market is in. That is the thing they are asking about.
  */
 export async function fetchMarket(idOrSlug: string): Promise<Market | undefined> {
   const key = /^0x[0-9a-fA-F]{64}$/.test(idOrSlug)

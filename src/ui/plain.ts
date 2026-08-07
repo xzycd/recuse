@@ -3,7 +3,7 @@
  * passed, and as the single-shot output for `market` and `players`.
  *
  * Columns drop in a fixed order as the terminal narrows, so the leftmost
- * columns — the ones carrying the finding — survive at 80 characters and below.
+ * columns, the ones carrying the finding, survive at 80 characters and below.
  */
 
 import {
@@ -16,7 +16,7 @@ import type { Assessment, RepeatPlayer } from '../types.js';
 /**
  * Which optional columns fit.
  *
- * Market name, rounds and concentration never drop — they carry the finding.
+ * Market name, rounds and concentration never drop, they carry the finding.
  * Everything else goes as the terminal narrows, widest-cost first.
  */
 function columns(width: number) {
@@ -28,7 +28,7 @@ function columns(width: number) {
 }
 
 const W_ROUNDS = 5;
-/** Wide enough for "●●● 100% 5/100" — the meter, the share, and its terms. */
+/** Wide enough for "●●● 100% 5/100": the meter, the share, and its terms. */
 const W_CONC = 16;
 
 function nameWidth(width: number, col: ReturnType<typeof columns>): number {
@@ -98,12 +98,12 @@ export function renderRadar(
   // Nothing is filtered away silently. If rows were dropped, the count and the
   // reason are on screen.
   if (meta.hidden > 0) {
-    lines.push(dim(`${meta.hidden} markets hidden — never contested. --all to include them.`, style));
+    lines.push(dim(`${meta.hidden} markets hidden, never contested. --all to include them.`, style));
   }
 
   if ((assessments[0]?.tier ?? 'positions') === 'positions') {
     lines.push(
-      dim('positions only — proposer and disputer unread. set RECUSE_RPC_URL to read them.', style),
+      dim('positions only, proposer and disputer unread. set RECUSE_RPC_URL to read them.', style),
     );
   }
 
@@ -135,8 +135,8 @@ export function renderMarket(a: Assessment, style: Style): string {
     lines.push('');
     lines.push(
       c.meaning === 'wiped'
-        ? dim(`${c.side} side lost — ${count(c.totalSize)} tokens went to zero`, style)
-        : dim(`${c.side} side leads — market still open`, style),
+        ? dim(`${c.side} side lost, ${count(c.totalSize)} tokens went to zero`, style)
+        : dim(`${c.side} side leads, market still open`, style),
     );
     lines.push(
       `${padEnd('  top holders', 14)}${meter(c.topShare)} ${pct(c.topShare)} ` +
@@ -204,7 +204,7 @@ export function renderPlayers(
   );
   lines.push(dim('someone has to lose a market. repeatedly is a question, not a finding.', style));
   if (meta.marketsFailed > 0) {
-    lines.push(dim(`${meta.marketsFailed} markets could not be read — tallies are incomplete.`, style));
+    lines.push(dim(`${meta.marketsFailed} markets could not be read, tallies are incomplete.`, style));
   }
 
   return lines.join('\n');

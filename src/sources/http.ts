@@ -1,6 +1,6 @@
 /**
  * The only HTTP the project does. Native fetch, a timeout, and a retry that
- * backs off. No client library — every source here is plain REST or GraphQL
+ * backs off. No client library. Every source here is plain REST or GraphQL
  * and adding a dependency to set a header would be silly.
  */
 
@@ -38,7 +38,7 @@ export async function getJson<T>(url: string, opts: FetchOptions = {}): Promise<
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) {
-      // 400ms, 800ms, 1600ms — enough to clear a rate limit, short enough
+      // 400ms, 800ms, 1600ms, enough to clear a rate limit, short enough
       // that an interactive command still feels alive.
       await sleep(400 * 2 ** (attempt - 1));
     }
@@ -77,7 +77,7 @@ export async function getJson<T>(url: string, opts: FetchOptions = {}): Promise<
 }
 
 /**
- * Gamma and the CLOB return several fields as JSON encoded inside a string —
+ * Gamma and the CLOB return several fields as JSON encoded inside a string.
  * `outcomes` arrives as the literal text `["Yes", "No"]`. Decode defensively,
  * because a malformed field should cost us one column, not the whole run.
  */

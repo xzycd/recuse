@@ -21,7 +21,7 @@ export interface AssessOptions {
  * Read one market: what happened to its resolution, and who held it.
  *
  * Never throws for a missing source. A market with unreachable holders still
- * returns an assessment, with the gap recorded as a caveat — a partial answer
+ * returns an assessment, with the gap recorded as a caveat. A partial answer
  * that says so is useful, and a crash is not.
  */
 export async function assess(market: Market, opts: AssessOptions = {}): Promise<Assessment> {
@@ -88,7 +88,7 @@ export async function assessAll(markets: Market[], opts: AssessOptions = {}): Pr
 /**
  * Tally addresses across a set of assessed markets.
  *
- * Needs the holders back, which `assess` does not keep — carrying every
+ * Needs the holders back, which `assess` does not keep. Carrying every
  * holder of every market through the assessment just so this function can have
  * them would bloat the JSON output for everyone who never calls this.
  */

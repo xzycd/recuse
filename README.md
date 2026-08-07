@@ -1,0 +1,102 @@
+# recuse
+
+Polymarket markets do not settle on facts. They settle on a vote. Someone proposes an outcome with a $500 bond, anyone can bond against it, and contested markets go to UMA token holders. `recuse` reads that record: which markets were fought over, how many rounds it took, and who was left holding the losing side when it ended.
+
+Point it at a market and it tells you what happened to the resolution. Run it bare and it ranks every contested market it can find, most contested first. Everything it prints, it will also emit as JSON.
+
+```
+recuse · 30 contested of 400 scanned · showing 8
+────────────────────────────────────────────────────────────────────────────────
+MARKET                                       RDS    WIPED     TOP 5 HELD    POOL
+Will Zelenskyy wear a suit before July?       5×    52.1M  ●○○ 33% 5/100  $242.2M
+US x Iran ceasefire extended by April 22?     3×   108.6M  ●●● 85% 5/100  $203.6M
+MicroStrategy sells any Bitcoin by May 31?    2×    96.6M  ●○○ 39% 5/100  $375.8M
+US forces enter Iran by April 30?             2×    41.4M  ●●○ 45% 5/100  $269.0M
+────────────────────────────────────────────────────────────────────────────────
+370 markets hidden, never contested. --all to include them.
+```
+
+The suit market went five rounds. 52.1 million tokens went to zero when it finally landed.
+
+## Install
+
+```sh
+npx recuse
+```
+
+Or `npm i -g recuse`. Node 20 or newer. No API keys, no account, no config file.
+
+## Use
+
+```sh
+recuse                          # contested markets, most contested first
+recuse market <id-or-slug>      # one market: its resolution history and holders
+recuse players                  # addresses that keep ending up on the losing side
+recuse market <id> --json       # same data, pipeable
+```
+
+In a terminal you get an interactive list. Arrow keys move, enter opens the detail pane, q quits. Pipe it anywhere and you get a single plain table instead, so `recuse | grep Iran` does what you expect.
+
+Useful flags: `--scan <n>` for how many markets to examine, `--limit <n>` for how many to show, `--all` to include markets nobody ever contested, `--plain` to skip the interactive view.
+
+## What the numbers mean
+
+`RDS` is dispute rounds. One round is one person putting up a bond to contest a proposed outcome. Two rounds means two people did.
+
+`WIPED` is how many outcome tokens on the losing side are still sitting in wallets, worth nothing.
+
+`TOP 5 HELD` reads as a share and then its terms: `85% 5/100` means the five largest holders we could see held 85% of that side, out of the hundred holders the API returned. The share never appears without the count behind it, because a share of an unknown denominator is not checkable.
+
+## Why it measures the losing side
+
+This one is not obvious and it took live data to catch.
+
+When a market settles, winners redeem their tokens for a dollar each and their balances go to zero. Losers keep their tokens, because there is nothing to redeem them for. So the holder list of a settled market is almost entirely the people who lost.
+
+On the Zelenskyy market the winning side had 907 tokens left in it. The losing side had 52,137,899. A concentration figure read off the winning side would have been measuring whoever had not got round to redeeming yet.
+
+So `recuse` measures the side that is actually visible and says which side that is. `recuse players` counts losses for the same reason: losers are observable and winners are not.
+
+One more thing worth knowing. In a 400 market scan, zero of the 30 contested markets were still open. Disputes finish. By the time one shows up in the history it is over, and the tool says so rather than implying you are watching something live.
+
+## What it will not tell you
+
+It will not tell you a market was rigged. It reports two public facts, what happened to a resolution and who held which side, and leaves the reading to you. Someone has to be on the losing side of every market. Being there repeatedly is a question worth asking, not an answer.
+
+It also holds no keys, places no orders, and never asks for a wallet. It reads public endpoints and prints tables.
+
+## Reading who proposed and who disputed
+
+Proposer and disputer addresses live in the logs of UMA's Managed Optimistic Oracle on Polygon, which needs `eth_getLogs` over a block range. The free public endpoints will not serve one. Measured while building this:
+
+| endpoint | range it will serve |
+| --- | --- |
+| polygon-bor-rpc.publicnode.com | 1000 blocks, throttled to 10 under load |
+| polygon.drpc.org | rejects ranges it advertises as supported |
+| 1rpc.io/matic | 50 blocks |
+
+At 50 blocks a window, one day of Polygon costs 860 requests. So this layer is off by default and the tool says so in its footer every time it runs. Set `RECUSE_RPC_URL` to any provider free tier and it turns on.
+
+```sh
+RECUSE_RPC_URL=https://polygon-mainnet.example.com/v2/key recuse
+```
+
+## Where the data comes from
+
+Everything below is public and unauthenticated.
+
+Market catalogue and resolution history come from `gamma-api.polymarket.com`, which exposes the lifecycle as an ordered log: proposed, disputed, proposed, resolved. Holders come from `data-api.polymarket.com`, with the display names accounts chose for themselves. Prices come from the CLOB.
+
+Gamma has one trap worth knowing about if you build against it. It ignores query parameters it does not recognise and answers with its default page rather than an error, so asking for one market by an unsupported filter hands you twenty unrelated ones and nothing in the response says the filter was dropped. Every lookup here is checked against what was requested.
+
+## Build
+
+```sh
+npm install
+npm test        # 55 tests, no network
+npm run build
+```
+
+Two runtime dependencies, ink and react. Chain access is 20 lines of `fetch` against JSON-RPC rather than a web3 library, because the whole job is one method and a string slice.
+
+MIT.

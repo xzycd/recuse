@@ -112,7 +112,7 @@ export interface Concentration {
   side: Side;
   /**
    * Why this side is the one being measured. `wiped` means the market has
-   * settled and this is the side that lost — the only side still fully visible,
+   * settled and this is the side that lost, the only side still fully visible,
    * because winners redeem and losers do not. `leading` means the market is
    * live and both sides are intact.
    */
@@ -130,7 +130,7 @@ export interface Concentration {
 /**
  * An address seen across several contested markets.
  *
- * Counts losses, not wins — see the redemption note in core/capture.ts. Winners
+ * Counts losses, not wins. See the redemption note in core/capture.ts. Winners
  * redeem and vanish from holder data; losers stay, holding tokens worth nothing.
  *
  * The signal is deliberately weaker than it sounds: being on the losing side of
@@ -156,7 +156,7 @@ export interface RepeatPlayer {
  *
  * `positions` is what every user gets with no setup. `positions+chain` needs an
  * RPC that will serve log ranges, which the free public endpoints will not.
- * The tool always states which one produced a given answer — a partial picture
+ * The tool always states which one produced a given answer. A partial picture
  * presented as a complete one is the failure this project exists to catch.
  */
 export type EvidenceTier = 'positions' | 'positions+chain';

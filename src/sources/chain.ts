@@ -13,7 +13,7 @@
  *
  * At 50 blocks a window, covering a day of Polygon costs 860 requests. So the
  * default build does not pretend to have this data. Point RECUSE_RPC_URL at an
- * endpoint that will serve log ranges — any provider's free tier does — and
+ * endpoint that will serve log ranges (any provider's free tier does) and
  * this layer turns on. Until then the tool says so, every time, rather than
  * showing a partial picture that looks complete.
  */

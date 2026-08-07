@@ -118,11 +118,11 @@ export function App({ assessments, scanned, contestedTotal }: Props) {
 
       <Text dimColor>{'─'.repeat(width)}</Text>
       <Text dimColor>
-        {`${scanned - contestedTotal} markets hidden — never contested`}
+        {`${scanned - contestedTotal} markets hidden, never contested`}
       </Text>
       <Text dimColor>
         {assessments[0]?.tier === 'positions'
-          ? 'positions only — set RECUSE_RPC_URL to read proposer and disputer'
+          ? 'positions only, set RECUSE_RPC_URL to read proposer and disputer'
           : 'positions + chain'}
       </Text>
       <Text dimColor>{'↑↓ move   enter detail   q quit'}</Text>
@@ -156,8 +156,8 @@ function Detail({ assessment: a, width }: { assessment: Assessment; width: numbe
         <Box flexDirection="column" marginTop={1}>
           <Text dimColor>
             {c.meaning === 'wiped'
-              ? `${c.side} side lost — ${count(c.totalSize)} tokens went to zero`
-              : `${c.side} side leads — market still open`}
+              ? `${c.side} side lost, ${count(c.totalSize)} tokens went to zero`
+              : `${c.side} side leads, market still open`}
           </Text>
           <Text>
             {label('  top holders') + `${meter(c.topShare)} ${pct(c.topShare)} `}

@@ -1,5 +1,5 @@
 /**
- * Polymarket's data API — who holds what, by wallet, with the display names
+ * Polymarket's data API: who holds what, by wallet, with the display names
  * those accounts chose for themselves.
  *
  * Public and unauthenticated. This is the position half of the join, and on a
@@ -29,7 +29,7 @@ interface RawHolderGroup {
 /**
  * Accounts show up with a chosen name, a generated pseudonym, or neither.
  *
- * The generated fallback looks like `0xAbC…-1730864521381` — an address with a
+ * The generated fallback looks like `0xAbC…-1730864521381`, an address with a
  * timestamp glued on. That is not a name, it is the absence of one, so it is
  * dropped rather than displayed as if the account had identified itself.
  */
@@ -52,7 +52,7 @@ export function sideForIndex(market: Market, index: number): Side {
 /**
  * Top holders of a market, both sides, largest first.
  *
- * `limit` is per outcome token, not overall — the API groups by token and this
+ * `limit` is per outcome token, not overall. The API groups by token and this
  * keeps that meaning rather than quietly reinterpreting it.
  */
 export async function fetchHolders(market: Market, limit = 100): Promise<Holder[]> {

@@ -42,7 +42,7 @@ function derivePhase(steps: ResolutionStep[], market?: Pick<Market, 'closed'>): 
   if (last === 'proposed' || last === 'reset') return 'proposed';
 
   // No lifecycle recorded. A closed market with no steps resolved by some
-  // route other than UMA — automatic settlement, or the feed never filled in.
+  // route other than UMA: automatic settlement, or the feed never filled in.
   return market?.closed ? 'settled' : 'undisputed';
 }
 
@@ -56,7 +56,7 @@ function parseDate(value: unknown): Date | undefined {
  * Parse a market's resolution lifecycle.
  *
  * Accepts the market so the phase can account for closure, but the round count
- * comes only from the steps — that number is a fact about the record, not a
+ * comes only from the steps. That number is a fact about the record, not a
  * judgement, and it should not vary with anything else.
  */
 export function parseDispute(market: Market): DisputeState {

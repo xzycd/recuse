@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * recuse — see who decides a Polymarket market, and what they own.
+ * recuse: see who decides a Polymarket market, and what they own.
  *
  * Every command takes --json. The renderers are one consumer of the engine,
  * not the product, and anything you can read you can pipe.
@@ -11,7 +11,7 @@ import { fetchContestedMarkets, fetchMarket, fetchMarkets } from './sources/gamm
 import { detectStyle } from './ui/format.js';
 import { renderMarket, renderPlayers, renderRadar } from './ui/plain.js';
 
-const USAGE = `recuse — who decides a Polymarket market, and what they own
+const USAGE = `recuse: who decides a Polymarket market, and what they own
 
 usage
   recuse                      contested markets, most contested first
@@ -96,7 +96,7 @@ async function runRadar(args: Args): Promise<number> {
 
   // The interactive view needs a real terminal to draw into and keys to read
   // from. Piped, redirected or explicitly asked for plain, it renders once and
-  // exits — which is also what makes `recuse | grep` behave.
+  // exits, which is also what makes `recuse | grep` behave.
   const interactive = !args.plain && process.stdout.isTTY === true && process.stdin.isTTY === true;
 
   if (interactive) {

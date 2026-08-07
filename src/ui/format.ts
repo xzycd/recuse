@@ -75,7 +75,7 @@ export function pct(share: number): string {
 /**
  * A share as filled circles.
  *
- * Deliberately coarse — three buckets, not a percentage bar. The underlying
+ * Deliberately coarse: three buckets, not a percentage bar. The underlying
  * number is a share of a truncated holder list, and a fine-grained bar would
  * imply a precision the data does not have.
  */

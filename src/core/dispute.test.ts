@@ -1,7 +1,7 @@
 /**
  * Fixtures here are real. Every lifecycle string was pulled from Gamma while
  * planning this tool, and the round counts are what actually happened to those
- * markets. If a refactor breaks one of these, the parser is wrong — not the test.
+ * markets. If a refactor breaks one of these, the parser is wrong, not the test.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -50,7 +50,7 @@ describe('normaliseStep', () => {
   });
 });
 
-describe('parseDispute — real markets', () => {
+describe('parseDispute: real markets', () => {
   it('counts zero rounds for a clean resolution', () => {
     // The common case: 53 of 100 top closed markets looked exactly like this.
     const d = parseDispute(market(['proposed', 'resolved']));
@@ -60,7 +60,7 @@ describe('parseDispute — real markets', () => {
   });
 
   it('counts two rounds on the $375M MicroStrategy market', () => {
-    // "MicroStrategy sells any Bitcoin by May 31, 2026?" — $375,813,105 volume.
+    // "MicroStrategy sells any Bitcoin by May 31, 2026?", $375,813,105 volume.
     const d = parseDispute(market(['proposed', 'disputed', 'proposed', 'disputed']));
     expect(d.rounds).toBe(2);
     expect(d.contested).toBe(true);
@@ -68,7 +68,7 @@ describe('parseDispute — real markets', () => {
   });
 
   it('counts five rounds on the $242M Zelenskyy suit market', () => {
-    // "Will Zelenskyy wear a suit before July?" — the most contested market
+    // "Will Zelenskyy wear a suit before July?", the most contested market
     // in the sample, and the end-to-end fixture named in the plan.
     const steps = ['proposed', 'disputed', 'proposed', 'disputed', 'proposed',
                    'disputed', 'proposed', 'disputed', 'proposed', 'disputed'];
@@ -89,7 +89,7 @@ describe('parseDispute — real markets', () => {
   });
 });
 
-describe('parseDispute — edges', () => {
+describe('parseDispute: edges', () => {
   it('calls an empty lifecycle undisputed on an open market', () => {
     const d = parseDispute(market([]));
     expect(d.phase).toBe('undisputed');

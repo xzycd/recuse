@@ -8,7 +8,7 @@
  * winning side of M contested markets out of the K we looked at.
  *
  * It will not say those wallets caused the outcome. Holding the winning side of
- * a disputed market is, on its own, evidence of nothing — someone has to. The
+ * a disputed market is, on its own, evidence of nothing, since someone has to. The
  * tally is the finding; the interpretation belongs to whoever reads it.
  */
 
@@ -18,7 +18,7 @@ import type { Concentration, Holder, Market, RepeatPlayer, Side } from '../types
  * Which side a market landed on, read from its prices.
  *
  * A resolved binary market prices the winner at 1 and the loser at 0. While
- * still open, the leading side is the best available reading — so callers get
+ * still open, the leading side is the best available reading, so callers get
  * `settled: false` alongside it and can decide whether to use it.
  */
 export function leadingSide(market: Market): { side: Side; settled: boolean } | undefined {
@@ -37,8 +37,8 @@ export function leadingSide(market: Market): { side: Side; settled: boolean } | 
  * their tokens for a dollar each and their balances go to zero, while losers
  * keep worthless tokens forever because there is nothing to redeem them for.
  * So the current holder list of a settled market is almost entirely the losing
- * side — measured on the Zelenskyy market, the winning side had 907 tokens
- * left against the losing side's 52,137,899.
+ * side. Measured on the Zelenskyy market, the winning side had 907 tokens left
+ * against the losing side's 52,137,899.
  *
  * Reading concentration off the winning side of a settled market therefore
  * measures whoever has not got round to redeeming yet, which is noise. The
@@ -66,7 +66,7 @@ export function observableSide(
 /**
  * How much of one side sits with its largest holders.
  *
- * `topShare` is a share of what we can see, not of what exists — the holders
+ * `topShare` is a share of what we can see, not of what exists. The holders
  * endpoint pages, so the denominator is the holders returned. `holderCount`
  * travels with it so nobody mistakes a top-20 sample for the whole book.
  */
@@ -157,7 +157,7 @@ export function repeatPlayers(outcomes: MarketOutcome[], minAppearances = 2): Re
 /**
  * Caveats that apply to a reading, in the order they undermine it.
  *
- * Returned as data rather than printed, so every surface — TUI, JSON, alerts —
+ * Returned as data rather than printed, so every surface (TUI, JSON, alerts)
  * carries the same warnings and none of them can quietly drop one.
  */
 export function caveatsFor(opts: {
@@ -174,7 +174,7 @@ export function caveatsFor(opts: {
   if (opts.holderCount === 0) {
     out.push('no holders returned for this market');
   } else if (opts.holdersTruncated) {
-    out.push(`holder list truncated at ${opts.holderCount} — shares are of what was returned`);
+    out.push(`holder list truncated at ${opts.holderCount}, shares are of what was returned`);
   }
   if (opts.settled) {
     out.push('settled market: winners redeemed and left the book, so only the losing side is visible');
