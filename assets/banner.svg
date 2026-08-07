@@ -2,70 +2,77 @@
   <rect width="1200" height="300" rx="18" fill="#08080a"/>
   <rect x="1" y="1" width="1198" height="298" rx="17" fill="#0e0e11" stroke="#1b1b20" stroke-width="2"/>
 
-  <clipPath id="lens"><circle cx="124" cy="138" r="52"/></clipPath>
-  <circle cx="124" cy="138" r="52" fill="none" stroke="#6f6a65" stroke-width="3"/>
-  <circle cx="176" cy="138" r="52" fill="none" stroke="#6f6a65" stroke-width="3"/>
-  <circle cx="176" cy="138" r="52" fill="#e0533d" clip-path="url(#lens)"/>
-  <g fill="#e8e6e3">
-    <rect x="268" y="96" width="48" height="12.75"/>
-    <rect x="268" y="108" width="12" height="12.75"/>
-    <rect x="316" y="108" width="12" height="12.75"/>
-    <rect x="268" y="120" width="12" height="12.75"/>
-    <rect x="316" y="120" width="12" height="12.75"/>
-    <rect x="268" y="132" width="48" height="12.75"/>
-    <rect x="268" y="144" width="12" height="12.75"/>
-    <rect x="292" y="144" width="24" height="12.75"/>
-    <rect x="268" y="156" width="12" height="12.75"/>
-    <rect x="304" y="156" width="24" height="12.75"/>
-    <rect x="268" y="168" width="12" height="12.75"/>
-    <rect x="316" y="168" width="12" height="12.75"/>
-    <rect x="340" y="96" width="60" height="12.75"/>
-    <rect x="340" y="108" width="12" height="12.75"/>
-    <rect x="340" y="120" width="12" height="12.75"/>
-    <rect x="340" y="132" width="48" height="12.75"/>
-    <rect x="340" y="144" width="12" height="12.75"/>
-    <rect x="340" y="156" width="12" height="12.75"/>
-    <rect x="340" y="168" width="60" height="12.75"/>
-    <rect x="424" y="96" width="48" height="12.75"/>
-    <rect x="412" y="108" width="12" height="12.75"/>
-    <rect x="412" y="120" width="12" height="12.75"/>
-    <rect x="412" y="132" width="12" height="12.75"/>
-    <rect x="412" y="144" width="12" height="12.75"/>
-    <rect x="412" y="156" width="12" height="12.75"/>
-    <rect x="424" y="168" width="48" height="12.75"/>
-    <rect x="484" y="96" width="12" height="12.75"/>
-    <rect x="532" y="96" width="12" height="12.75"/>
-    <rect x="484" y="108" width="12" height="12.75"/>
-    <rect x="532" y="108" width="12" height="12.75"/>
-    <rect x="484" y="120" width="12" height="12.75"/>
-    <rect x="532" y="120" width="12" height="12.75"/>
-    <rect x="484" y="132" width="12" height="12.75"/>
-    <rect x="532" y="132" width="12" height="12.75"/>
-    <rect x="484" y="144" width="12" height="12.75"/>
-    <rect x="532" y="144" width="12" height="12.75"/>
-    <rect x="484" y="156" width="12" height="12.75"/>
-    <rect x="532" y="156" width="12" height="12.75"/>
-    <rect x="496" y="168" width="36" height="12.75"/>
-    <rect x="568" y="96" width="48" height="12.75"/>
-    <rect x="556" y="108" width="12" height="12.75"/>
-    <rect x="556" y="120" width="12" height="12.75"/>
-    <rect x="568" y="132" width="36" height="12.75"/>
-    <rect x="604" y="144" width="12" height="12.75"/>
-    <rect x="604" y="156" width="12" height="12.75"/>
-    <rect x="556" y="168" width="48" height="12.75"/>
-    <rect x="628" y="96" width="60" height="12.75"/>
-    <rect x="628" y="108" width="12" height="12.75"/>
-    <rect x="628" y="120" width="12" height="12.75"/>
-    <rect x="628" y="132" width="48" height="12.75"/>
-    <rect x="628" y="144" width="12" height="12.75"/>
-    <rect x="628" y="156" width="12" height="12.75"/>
-    <rect x="628" y="168" width="60" height="12.75"/>
+  <g id="face-banner" fill="none" stroke="#d9a441" stroke-width="9.92" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="166" cy="138" r="62" stroke-width="11.408"/>
+    
+    <path d="M130.97 109.17 L151.42999999999998 129.63"/>
+    <path d="M151.42999999999998 109.17 L130.97 129.63"/>
+    
+    <path d="M176.85 109.78999999999999 L201.03 133.97"/>
+    <path d="M201.03 109.78999999999999 L176.85 133.97"/>
+    <path d="M135 156.6 Q168.48 190.07999999999998 198.86 155.35999999999999"/>
+    <path d="M185.22 173.96 q9.299999999999999 14.879999999999999 -9.299999999999999 16.12" stroke-width="8.928"/>
   </g>
-  <text x="270" y="222" textLength="416" lengthAdjust="spacingAndGlyphs"
+  <g fill="#e8e6e3">
+    <rect x="300" y="96" width="48" height="12.75"/>
+    <rect x="300" y="108" width="12" height="12.75"/>
+    <rect x="348" y="108" width="12" height="12.75"/>
+    <rect x="300" y="120" width="12" height="12.75"/>
+    <rect x="348" y="120" width="12" height="12.75"/>
+    <rect x="300" y="132" width="48" height="12.75"/>
+    <rect x="300" y="144" width="12" height="12.75"/>
+    <rect x="324" y="144" width="24" height="12.75"/>
+    <rect x="300" y="156" width="12" height="12.75"/>
+    <rect x="336" y="156" width="24" height="12.75"/>
+    <rect x="300" y="168" width="12" height="12.75"/>
+    <rect x="348" y="168" width="12" height="12.75"/>
+    <rect x="372" y="96" width="60" height="12.75"/>
+    <rect x="372" y="108" width="12" height="12.75"/>
+    <rect x="372" y="120" width="12" height="12.75"/>
+    <rect x="372" y="132" width="48" height="12.75"/>
+    <rect x="372" y="144" width="12" height="12.75"/>
+    <rect x="372" y="156" width="12" height="12.75"/>
+    <rect x="372" y="168" width="60" height="12.75"/>
+    <rect x="456" y="96" width="48" height="12.75"/>
+    <rect x="444" y="108" width="12" height="12.75"/>
+    <rect x="444" y="120" width="12" height="12.75"/>
+    <rect x="444" y="132" width="12" height="12.75"/>
+    <rect x="444" y="144" width="12" height="12.75"/>
+    <rect x="444" y="156" width="12" height="12.75"/>
+    <rect x="456" y="168" width="48" height="12.75"/>
+    <rect x="516" y="96" width="12" height="12.75"/>
+    <rect x="564" y="96" width="12" height="12.75"/>
+    <rect x="516" y="108" width="12" height="12.75"/>
+    <rect x="564" y="108" width="12" height="12.75"/>
+    <rect x="516" y="120" width="12" height="12.75"/>
+    <rect x="564" y="120" width="12" height="12.75"/>
+    <rect x="516" y="132" width="12" height="12.75"/>
+    <rect x="564" y="132" width="12" height="12.75"/>
+    <rect x="516" y="144" width="12" height="12.75"/>
+    <rect x="564" y="144" width="12" height="12.75"/>
+    <rect x="516" y="156" width="12" height="12.75"/>
+    <rect x="564" y="156" width="12" height="12.75"/>
+    <rect x="528" y="168" width="36" height="12.75"/>
+    <rect x="600" y="96" width="48" height="12.75"/>
+    <rect x="588" y="108" width="12" height="12.75"/>
+    <rect x="588" y="120" width="12" height="12.75"/>
+    <rect x="600" y="132" width="36" height="12.75"/>
+    <rect x="636" y="144" width="12" height="12.75"/>
+    <rect x="636" y="156" width="12" height="12.75"/>
+    <rect x="588" y="168" width="48" height="12.75"/>
+    <rect x="660" y="96" width="60" height="12.75"/>
+    <rect x="660" y="108" width="12" height="12.75"/>
+    <rect x="660" y="120" width="12" height="12.75"/>
+    <rect x="660" y="132" width="48" height="12.75"/>
+    <rect x="660" y="144" width="12" height="12.75"/>
+    <rect x="660" y="156" width="12" height="12.75"/>
+    <rect x="660" y="168" width="60" height="12.75"/>
+  </g>
+  <text x="302" y="222" textLength="416" lengthAdjust="spacingAndGlyphs"
         font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="21" fill="#6f6a65">who decided this market, and what did they own</text>
   <g>
-    <rect x="270" y="242" width="22" height="7" rx="3.5" fill="#6f6a65"/>
-    <rect x="300" y="242" width="22" height="7" rx="3.5" fill="#d9a441"/>
-    <rect x="330" y="242" width="22" height="7" rx="3.5" fill="#e0533d"/>
+    <rect x="302" y="242" width="22" height="7" rx="3.5" fill="#6f6a65"/>
+    <rect x="332" y="242" width="22" height="7" rx="3.5" fill="#d9a441"/>
+    <rect x="362" y="242" width="22" height="7" rx="3.5" fill="#e0533d"/>
   </g>
 </svg>
