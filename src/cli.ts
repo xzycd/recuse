@@ -10,19 +10,26 @@ import { readFileSync } from 'node:fs';
 import { assess, assessAll, assessWallet, tallyRepeatPlayers } from './core/assess.js';
 import { checkForUpdate, updateNotice } from './core/update.js';
 import { checkWebhook } from './core/notify.js';
+import { chainNote } from './sources/chain.js';
 import { redactMessage } from './core/safe.js';
 import {
-  addToWatchlist, readEvents, readSeen, readWatchlist, removeFromWatchlist,
+  addToWatchlist, readEventLog, readEvents, readRadar, readSeen, readWatchlist,
+  removeFromWatchlist, writeRadar, type SeenState,
 } from './core/store.js';
+import { recall, recallNote } from './core/recall.js';
+import { snapshot } from './core/watch.js';
 import { runLoop, runPass, type PassResult } from './core/watcher.js';
 import type { EventKind } from './core/watch.js';
-import { fetchContestedMarkets, fetchMarket, fetchMarkets } from './sources/gamma.js';
+import { fetchBothStates, fetchContestedMarkets, fetchMarket, fetchMarkets } from './sources/gamma.js';
+import { queue } from './core/queue.js';
+import { summarise } from './core/ledger.js';
 import { detectStyle } from './ui/format.js';
 import { splash } from './ui/logo.js';
 import { startSpinner } from './ui/loading.js';
 import {
-  renderEvent, renderMarket, renderPassSummary, renderPlayers, renderRadar, renderThemes,
-  renderWallet, renderWatchlist, renderWatchStart, renderWinners,
+  renderCard, renderEvent, renderLedger, renderMarket, renderPassSummary, renderPlayers,
+  renderQueue, renderRadar, renderThemes, renderWallet, renderWatchlist, renderWatchStart,
+  renderWinners,
 } from './ui/plain.js';
 import { colourise, THEMES, themeNames } from './ui/theme.js';
 
@@ -42,6 +49,7 @@ export function version(): string {
 
 const USAGE = `usage
   recuse                      contested markets, most contested first
+  recuse queue                markets whose resolution has not finished
   recuse market <id|slug>     one market: resolution history, both sides
   recuse winners <id|slug>    who bought the side that won, and for how much
   recuse wallet <address>     one wallet's record, disputed markets first
@@ -56,9 +64,11 @@ watching
   recuse watch rm <id|slug>   take one off
   recuse watch list           show the watchlist and what was last seen
   recuse events               the log of everything that moved
+  recuse ledger               what the log has accumulated, summarised
 
 options
   --json            machine-readable output
+  --card            market: a block sized for pasting into a chat
   --plain           force the plain renderer
   --limit <n>       rows to show, or positions to read for wallet (default 25)
   --scan <n>        markets to examine (default 600)
@@ -79,9 +89,8 @@ watch options
 
 environment
   RECUSE_THEME      default theme
-  RECUSE_RPC_URL    a Polygon endpoint that serves eth_getLogs ranges. without
-                    it, proposer and disputer identities are not read. the free
-                    public endpoints cap at 10-50 blocks and cannot be used.
+  RECUSE_RPC_URL    reserved. the oracle reading is not built yet, so this is
+                    validated and then unused. no reading stands on chain data.
   RECUSE_HOME       where the watchlist, state and event log live (default ~/.recuse)
   RECUSE_NO_UPDATE_CHECK  skip the version check entirely
   NO_COLOR          monochrome
@@ -109,6 +118,7 @@ interface Args {
   only?: string;
   webhook?: string;
   detail: boolean;
+  card: boolean;
 }
 
 /** Anything under this hammers Gamma for no benefit; disputes do not move in seconds. */
@@ -118,7 +128,7 @@ export function parseArgs(argv: string[]): Args {
   const args: Args = {
     command: 'radar', json: false, plain: false, limit: 25, scan: 600,
     all: false, winners: false, logo: true, help: false,
-    once: false, intervalMs: 300_000, discover: false, detail: true,
+    once: false, intervalMs: 300_000, discover: false, detail: true, card: false,
   };
   const rest: string[] = [];
 
@@ -134,6 +144,7 @@ export function parseArgs(argv: string[]): Args {
     else if (a === '--once') args.once = true;
     else if (a === '--discover') args.discover = true;
     else if (a === '--no-detail') args.detail = false;
+    else if (a === '--card') args.card = true;
     else if (a === '--limit') args.limit = Number(argv[++i]) || args.limit;
     else if (a === '--scan') args.scan = Number(argv[++i]) || args.scan;
     else if (a === '--min-pool') args.minPool = Number(argv[++i]) || args.minPool;
@@ -235,8 +246,43 @@ async function runRadar(args: Args): Promise<number> {
 
   const { markets, scanned } = found;
 
+  // What changed since the last run, and the record of this one. Read before
+  // the write, obviously, and the write is best effort: a radar that cannot
+  // save its snapshot should still print the table it already has.
+  const previous: SeenState = await readRadar().catch(() => ({ markets: {} }));
+  const moved = recall(assessments, previous, new Date());
+  const note = recallNote(moved, assessments.length);
+
+  const now = new Date();
+  await writeRadar({
+    baselineAt: previous.baselineAt ?? now.toISOString(),
+    markets: {
+      ...previous.markets,
+      ...Object.fromEntries(
+        assessments
+          .filter((a) => a.market.conditionId)
+          .map((a) => [a.market.conditionId, snapshot(a.market, now)]),
+      ),
+    },
+  }).catch(() => {});
+
   if (args.json) {
-    emitJson({ scanned, contested: markets.length, shown: assessments.length, assessments });
+    emitJson({
+      scanned,
+      contested: markets.length,
+      shown: assessments.length,
+      // Same figures the table shows. Anything you can read you can pipe.
+      recall: {
+        since: moved.since,
+        baseline: moved.baseline,
+        compared: moved.compared,
+        moved: moved.moved,
+        rewritten: moved.rewritten,
+        unseen: moved.unseen,
+        movement: Object.fromEntries(moved.movement),
+      },
+      assessments,
+    });
     return 0;
   }
 
@@ -259,6 +305,13 @@ async function runRadar(args: Args): Promise<number> {
         scanned,
         contestedTotal: markets.length,
         theme: style.theme,
+        evidence: chainNote(),
+        movement: moved.movement,
+        // Opens on what changed when something did, and on the familiar
+        // ranking when nothing did. A default that reorders the table for no
+        // visible reason is worse than one that never moves.
+        sort: moved.moved + moved.rewritten > 0 ? ('moved' as const) : ('rounds' as const),
+        recall: note,
         notice,
       }),
     );
@@ -269,7 +322,14 @@ async function runRadar(args: Args): Promise<number> {
   emit(
     renderRadar(
       assessments,
-      { scanned, hidden: scanned - markets.length, contestedTotal: markets.length, notice },
+      {
+        scanned,
+        hidden: scanned - markets.length,
+        contestedTotal: markets.length,
+        evidence: chainNote(),
+        recall: note,
+        notice,
+      },
       style,
     ),
   );
@@ -321,7 +381,76 @@ async function runMarket(args: Args): Promise<number> {
     return 0;
   }
 
+  // Never coloured, whatever the terminal supports. This exists to be pasted
+  // somewhere that is not a terminal, and escape codes in a chat message are
+  // somebody else's problem to strip.
+  if (args.card) {
+    emit(renderCard(assessment));
+    return 0;
+  }
+
   emit(renderMarket(assessment, style));
+  return 0;
+}
+
+/** Markets whose resolution record has not reached a terminal step. */
+async function runQueue(args: Args): Promise<number> {
+  const style = detectStyle({ colour: args.colour, theme: args.theme });
+  showSplash(args, style);
+
+  const spinner = args.json
+    ? { update() {}, stop() {} }
+    : startSpinner('reading lifecycles', { theme: style.theme, depth: style.depth });
+
+  let scan;
+  try {
+    const { markets } = await fetchBothStates(args.scan);
+    scan = queue(markets);
+  } finally {
+    spinner.stop();
+  }
+
+  const rows = scan.pending.slice(0, args.limit);
+
+  if (args.json) {
+    emitJson({
+      scanned: scan.scanned,
+      pending: scan.pending.length,
+      finished: scan.finished,
+      noLifecycle: scan.noLifecycle,
+      undated: scan.undated,
+      markets: rows.map((p) => ({
+        conditionId: p.market.conditionId,
+        slug: p.market.slug,
+        question: p.market.question,
+        last: p.last,
+        rounds: p.dispute.rounds,
+        phase: p.dispute.phase,
+        steps: p.dispute.steps,
+        since: p.since?.toISOString(),
+        waitedMs: p.waited,
+        pool: p.market.volume,
+      })),
+    });
+    return 0;
+  }
+
+  emit(renderQueue(scan, rows, style));
+  return 0;
+}
+
+/** What the event log has accumulated. */
+async function runLedger(args: Args): Promise<number> {
+  const style = detectStyle({ colour: args.colour, theme: args.theme });
+  const { events, skipped } = await readEventLog();
+  const summary = summarise(events, skipped, args.limit);
+
+  if (args.json) {
+    emitJson(summary);
+    return 0;
+  }
+
+  emit(renderLedger(summary, style));
   return 0;
 }
 
@@ -332,7 +461,14 @@ async function runWinners(args: Args): Promise<number> {
 
   let assessment;
   try {
-    assessment = await assess(found.market, { winners: true, winnerLimit: args.limit });
+    found.spinner.update('naming the winning side');
+    assessment = await assess(found.market, {
+      winners: true,
+      winnerLimit: args.limit,
+      // The one surface whose entire output is a list of wallets, so it is
+      // worth a request each to say who they are.
+      winnerNames: true,
+    });
   } finally {
     found.spinner.stop();
   }
@@ -640,6 +776,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     switch (args.command) {
       case 'radar':
         return await runRadar(args);
+      case 'queue':
+        return await runQueue(args);
+      case 'ledger':
+        return await runLedger(args);
       case 'market':
         return await runMarket(args);
       case 'winners':

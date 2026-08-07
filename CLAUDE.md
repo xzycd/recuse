@@ -19,10 +19,13 @@ src/
     wallet.ts     one wallet's ledger, priced from the on-chain payout. pure
     rank.ts       sort order, filtering, viewport. pure
     watch.ts      what counts as a resolution moving. pure
+    recall.ts     what moved since the last radar run. pure, reuses watch.ts
+    queue.ts      lifecycles that never terminated, and how long. pure
+    ledger.ts     the event log summarised. pure
     update.ts     version check. checks and prints, never installs
     assess.ts     assembles one answer from every source (does I/O)
     watcher.ts    one poll pass, and the loop (does I/O)
-    store.ts      the watchlist, the last snapshot, the event log, under ~/.recuse
+    store.ts      the watchlist, both snapshots, the event log, under ~/.recuse
     notify.ts     webhook delivery. the only outbound sink
   ui/
     theme.ts      five themes, colour depth detection, hex to escape
@@ -36,12 +39,12 @@ tools/
   logo.mjs    regenerates assets/. run after changing the wordmark
 ```
 
-`core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/wallet.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
+`core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/recall.ts`, `core/queue.ts`, `core/ledger.ts`, `core/wallet.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
 
 ## Commands
 
 ```sh
-npm test          # 219 tests, no network, sub-second
+npm test          # 266 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
 node tools/logo.mjs   # regenerate assets/banner.svg and assets/mark.svg
@@ -140,3 +143,9 @@ A running log. One line each, added when something cost real time to find out an
 - The subgraph's `outcomeIndex` is null everywhere, and `Number(null)` is 0. Any absent numeric coerced with `Number` becomes a real-looking answer. Check for null before coercing, always.
 - `MarketPosition.market` is non-null in the schema and dangles on real records, so traversing it fails the whole query. The token id is the position id after character 42.
 - The radar drew every row and overflowed any terminal shorter than the list. Anything that renders a list needs a viewport.
+- The evidence tier was built from `Boolean(process.env.RECUSE_RPC_URL)` rather than from what answered, so setting the variable to anything printed `positions+chain` over an empty actor list. Derive a claim about evidence from the data you got back, never from configuration.
+- That also meant `safeEndpoint` never ran, because it lived in a constructor nothing constructs. Second time here. A defence needs a test that fails when it stops being called, not just a call site.
+- The radar and the watcher cannot share `seen.json`. A radar run would write baselines for markets the daemon never polled, and the daemon stays quiet on a market's first move once it has a baseline. Two readers, two files.
+- A full address clipped to fit a narrow column reads like an identifier and cannot be checked. Abbreviate the whole column or none of it.
+- Gamma serves `closedTime` as `2025-07-09 00:30:39+00`: a space instead of the T, and a two digit offset where ISO wants four. `new Date` returns Invalid Date, and an unparsed clock reads as "no deadline recorded" rather than as an error. Repair both defects or lose the field silently.
+- The CLOB serves no price history for a settled market. Zero of six checked returned a point, at any interval or explicit timestamp range. Anything wanting price movement against the lifecycle is off the table, and settled markets are the only interesting ones.

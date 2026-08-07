@@ -30,12 +30,15 @@ Or `npm i -g recuse`. Node 20 or newer. No API keys, no account, no config file.
 
 ```sh
 recuse                          # contested markets, most contested first
+recuse queue                    # resolutions that have not finished, longest wait first
 recuse market <id-or-slug>      # one market, both sides of it
 recuse winners <id-or-slug>     # who bought the side that won, and for how much
 recuse wallet <address>         # one wallet's record, disputed markets first
 recuse players                  # addresses that keep ending up on the losing side
+recuse ledger                   # what your event log has accumulated
 recuse update                   # check for a newer version
 recuse market <id> --json       # same data, pipeable
+recuse market <id> --card       # a block sized for pasting into a chat
 ```
 
 In a terminal you get an interactive list. Pipe it anywhere and you get a single plain table instead, so `recuse | grep Iran` does what you expect.
@@ -45,13 +48,71 @@ In a terminal you get an interactive list. Pipe it anywhere and you get a single
 | `j` `k` `↑` `↓` | move, `g` and `G` for the ends |
 | `enter` | open the detail pane |
 | `/` | filter as you type |
-| `s` | cycle the sort: contested, money, wiped out, deadline |
+| `s` | cycle the sort: contested, moved, money, wiped out, deadline |
 | `t` | cycle the theme without restarting |
 | `?` | the full list |
+| `+` `!` `·` | row moved, its history was rewritten, not seen last run |
+
+### What moved since you last looked
+
+The most contested markets of all time are the same markets tomorrow, which is a good ranking and a poor reason to run a command twice. So the radar keeps a snapshot of its last reading and tells you what changed:
+
+```
+1 rewritten, 1 moved of 6 compared since 2026-08-07 14:15
+```
+
+The count never travels without the ground it covered. A first run has nothing to compare against, so it reports nothing and says how many markets it recorded, the same rule the watcher runs on. When something has moved, the list opens sorted by that; when nothing has, it opens on the familiar ranking rather than reordering itself for no visible reason.
+
+A market that was not in the previous reading is `not seen before`, never `moved`. The radar only snapshots the rows it assessed, so a market that fell out of the ranking and came back has no baseline, and calling that a move would be manufacturing news out of a change in the sort order.
+
+This snapshot lives in `radar.json`, separate from the watcher's `seen.json` on purpose. One shared file would let a plain `recuse` run write baselines for markets the daemon never polled, and the daemon reports nothing on a market it already has a baseline for, so it would go quiet on the first real move for every market the radar happened to see first.
 
 Five themes. `recuse --theme list` shows them, `RECUSE_THEME` sets a default. Inside the table only one thing is ever coloured, the dispute round count, because a table where four columns are coloured teaches you to stop reading colour. Themes recolour that ramp and the chrome around it; they never give a second column a meaning.
 
 Useful flags: `--scan <n>` for how many markets to examine, `--limit <n>` for how many to show, `--all` to include markets nobody ever contested, `--plain` to skip the interactive view.
+
+## What has not finished
+
+```sh
+recuse queue
+```
+
+```
+MARKET                                    WAITED  RDS  LIFECYCLE        POOL
+Trump ends Ukraine war in first 90 days?    16mo   2×  P→D→P→D        $56.5M
+Israel x Iran ceasefire before July?        13mo   3×  P→D→P→D→P→D    $51.8M
+Will Zelenskyy wear a suit before July?     13mo   5×  P→D→P→D→P→D…  $242.2M
+────────────────────────────────────────────────────────────────────────────
+37 pending of 400 examined. 108 finished, 255 never reached the oracle.
+a record that stops short may be a slow oracle or a feed that never appended.
+```
+
+Those three counts are as much the point as the rows. A list of 37 unfinished markets means nothing without how many were examined and how many never entered the oracle at all.
+
+This does not say a market is stuck. A record that stops short is either a resolution still in progress or Gamma never appending the last step, and from outside those are indistinguishable, so the tool reports the last recorded step and how long it has been rather than a diagnosis.
+
+## Sharing one
+
+```sh
+recuse market will-zelenskyy-wear-a-suit-before-july --card
+```
+
+```
+Will Zelenskyy wear a suit before July?
+
+5 dispute rounds  P→D→P→D→P→D→P→D→P→D  $242.2M traded
+
+YES lost. 52.1M tokens went to zero.
+  top 5 of 100 holders held 33% of it
+
+NO won. 58.9M tokens, rebuilt from trades.
+  top 5 of 20 wallets bought 52% of it
+  they paid $57.7M and redeemed $58.9M
+
+balances cannot see this side. winners redeem and leave.
+```
+
+Sized for a chat window, no colour, no box drawing. Every share still arrives with its denominator, because the reason to paste one of these is to settle an argument and a number nobody can check settles nothing.
 
 ## Watching
 
@@ -82,7 +143,25 @@ Three behaviours worth knowing, all of them deliberate:
 
 **A lifecycle that changes in any way other than growing is reported as `rewritten`.** Settled history moving under us is itself the news, and silently accepting the new version would hide exactly the thing this tool exists to notice.
 
-State lives in `~/.recuse`: the watchlist, the last snapshot of each market, and `events.jsonl`, which is append only and one JSON object per line.
+State lives in `~/.recuse`: the watchlist, the watcher's snapshot in `seen.json`, the radar's separate snapshot in `radar.json`, and `events.jsonl`, which is append only and one JSON object per line.
+
+`recuse ledger` reads that log back:
+
+```
+52 events across 19 markets, over 34 days
+
+what happened
+  disputed        21
+  proposed        12
+  appeared        10
+  settled          9
+
+moved most often
+  Will Zelenskyy wear a suit before July?          10×   5d
+  US x Iran ceasefire extended by April 22, 2026?   6×   3d
+```
+
+This is the only thing here that cannot be recomputed from a public endpoint. A market's dispute history is public today; the record of when you saw it move is not, and it only accumulates while something is running. It does not tally addresses: the event record carries concentration but not holder identities, so an actor ledger is not derivable from this file, and writing one that looked like it was would be inventing a source.
 
 ### Sending it somewhere
 
@@ -145,15 +224,21 @@ NO side won, 58.9M tokens rebuilt from trades. balances show almost none of this
   top buyers  ●●○ 52% (5 of 20 wallets, 30.5M of 58.9M tokens)
 ```
 
-`recuse winners` goes further and prices each one. Every winning token redeems for exactly a dollar, so the profit is arithmetic and not a guess.
+`recuse winners` goes further and prices each one, and puts a name to it. Every winning token redeems for exactly a dollar, so the profit is arithmetic and not a guess.
 
 ```
-ADDRESS                                       SHARE   BOUGHT     HELD     PAID   AVG     GAIN
-0x889e7f0464c72eb8cda1525ebc12b6aaba9d09e0      16%     7.1M     7.0M    $6.9M  0.98    $116K
-0xc6587b11a2209e46dfe3928b31c5514a8e33b784      16%     6.9M     6.9M    $6.8M  0.98    $133K
+WHO                           SHARE   BOUGHT     HELD     PAID   AVG     GAIN
+0943 0x5bff…ffbe                29%    49.7M    34.0M   $18.7M  0.55   $15.3M
+TimeQuestion 0xa1d7…e17e        23%    34.1M    26.7M   $13.7M  0.51   $13.0M
+0x971f…5929                      0%    32.9M        0    $-96K     —     $96K
+Fredi9999 0x1f2d…d0cf           22%    25.2M    25.2M   $13.5M  0.54   $11.7M
 ```
 
-Frequently unexciting, which is the point. Most of these wallets bought at 0.98 and made two cents. A tool that only ever surfaced scandals would be manufacturing them.
+Those names are the reason this is worth doing. These wallets redeemed and left the holder list, so no balance-based tracker can name them at all; they are joined in from the activity record, which is the only public place a redeemed wallet is still identified.
+
+A name never appears without its address. Display names are chosen by the account holder, nothing stops one calling itself another account's address, and every finding here is anchored to an address. The full form is always in `--json`.
+
+Frequently unexciting, which is the point. Plenty of these wallets bought at 0.98 and made two cents. A tool that only ever surfaced scandals would be manufacturing them.
 
 ## Following one wallet
 
@@ -195,7 +280,11 @@ It will not tell you a market was rigged. It reports two public facts, what happ
 
 It holds no keys, places no orders, and never asks for a wallet. It reads public endpoints and prints tables. `recuse update` tells you a new version exists and prints the install command rather than running it.
 
-## Reading who proposed and who disputed
+## Who proposed and who disputed, which this does not read
+
+It does not read them. No version has. Every reading here stands on positions and trades, the footer says which, and `RECUSE_RPC_URL` is validated and then unused.
+
+That is worth stating plainly because for a while the tool implied otherwise. The evidence tier was assembled from whether the variable was set rather than from whether anything was read, so exporting it printed `positions+chain` over an empty actor list. A tool built on the argument that people present partial pictures as complete ones does not get to do that, so the tier is now assembled only from sources that answered.
 
 Proposer and disputer addresses live in the logs of UMA's Managed Optimistic Oracle on Polygon, which needs `eth_getLogs` over a block range. The free public endpoints will not serve one. Measured while building this:
 
@@ -205,11 +294,7 @@ Proposer and disputer addresses live in the logs of UMA's Managed Optimistic Ora
 | polygon.drpc.org | rejects ranges it advertises as supported |
 | 1rpc.io/matic | 50 blocks |
 
-At 50 blocks a window, one day of Polygon costs 860 requests. So this layer is off by default and the tool says so in its footer every time it runs. Set `RECUSE_RPC_URL` to any provider free tier and it turns on.
-
-```sh
-RECUSE_RPC_URL=https://polygon-mainnet.example.com/v2/key recuse
-```
+At 50 blocks a window, one day of Polygon costs 860 requests, which is why this is the piece that is not finished. The oracle address, the adapter addresses and the topic hashes are decoded and pinned in `src/sources/chain.ts`, so what remains is the reading rather than the research.
 
 ## Where the data comes from
 

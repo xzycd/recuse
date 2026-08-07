@@ -30,6 +30,10 @@ export interface Market {
   resolutionSource?: string;
   endDate?: string;
   umaEndDate?: string;
+  /** When Gamma last touched the record. Not when the lifecycle last moved. */
+  updatedAt?: string;
+  /** When trading stopped, which is when oracle risk starts. */
+  closedTime?: string;
   closed: boolean;
   active: boolean;
   negRisk: boolean;
@@ -82,8 +86,10 @@ export interface Actor {
 /**
  * An actor who holds a position in the market they acted on.
  *
- * This is the whole product. Both halves are public facts; the finding is
- * that they overlap.
+ * This is the whole product, and it is not built. Both halves are public facts
+ * and the finding is that they overlap, but reading the acting half needs the
+ * oracle logs in `sources/chain.ts`, which nothing calls. Nothing has ever
+ * produced one of these.
  */
 export interface Conflict {
   address: string;
@@ -171,16 +177,29 @@ export interface RepeatPlayer {
 /**
  * Which evidence a result is standing on.
  *
- * `positions` is what every user gets with no setup. `positions+chain` needs an
- * RPC that will serve log ranges, which the free public endpoints will not.
- * The tool always states which one produced a given answer. A partial picture
- * presented as a complete one is the failure this project exists to catch.
+ * `positions` is what every user gets with no setup. `positions+trades` adds
+ * the winning side rebuilt from the subgraph. Both name a source that actually
+ * answered, which is the whole point: a partial picture presented as a complete
+ * one is the failure this project exists to catch.
+ *
+ * The `+chain` variants were removed rather than left unreachable. They were
+ * produced from the presence of RECUSE_RPC_URL rather than from any oracle
+ * request, so they were a claim about configuration wearing the costume of a
+ * claim about evidence. Restoring them is one line, once `sources/chain.ts` is
+ * wired into an assessment and can say what it read.
  */
-export type EvidenceTier = 'positions' | 'positions+trades' | 'positions+chain' | 'positions+trades+chain';
+export type EvidenceTier = 'positions' | 'positions+trades';
 
 /** A wallet that bought the side which went on to win. */
 export interface Winner {
   address: string;
+  /**
+   * Polymarket display name, when the account made one public and the lookup
+   * answered. Absent means one of three things and never distinguishes them:
+   * no name set, the account is unnamed by choice, or the request failed. The
+   * failure count is a caveat on the assessment for exactly that reason.
+   */
+  name?: string;
   /** Tokens bought, cumulative. Redemption does not reduce it. */
   bought: number;
   /** Tokens still held when trading stopped: bought minus resold. */
@@ -206,9 +225,12 @@ export interface Assessment {
   winnerConcentration?: Concentration;
   /** The largest buyers of the winning side, largest first. */
   winners?: Winner[];
-  /** Empty unless the chain layer is configured and reachable. */
+  /**
+   * Always empty in this build. `sources/chain.ts` is not wired into an
+   * assessment, so nothing populates these. They stay in the shape because the
+   * JSON contract should not change on the day the oracle reading lands.
+   */
   actors: Actor[];
-  /** Empty unless the chain layer is configured and reachable. */
   conflicts: Conflict[];
   tier: EvidenceTier;
   /** Why this reading is incomplete. Empty means it is not. */

@@ -19,9 +19,11 @@
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import React, { useEffect, useMemo, useState } from 'react';
 import { formatSteps } from '../core/dispute.js';
+import { winnerMoney } from '../core/capture.js';
 import {
   filterAssessments, nextSort, SORT_LABELS, sortAssessments, viewport, type SortMode,
 } from '../core/rank.js';
+import type { Movement } from '../core/recall.js';
 import { clip, count, meter, money, pct, until } from './format.js';
 import { FACE, WORDMARK } from './logo.js';
 import { THEMES, themeNames, type Theme } from './theme.js';
@@ -30,22 +32,47 @@ import type { Assessment } from '../types.js';
 /** Rows of chrome above and below the table. Used to size the viewport. */
 const CHROME_ROWS = 12;
 
+/**
+ * The second gutter cell, saying what changed since the last run.
+ *
+ * Characters rather than colour, and block or ASCII rather than emoji: an emoji
+ * is two cells wide in some terminals and one in others, which would shift
+ * every column to its right by one on the terminals that disagree.
+ */
+const MARKS: Record<Movement, string> = {
+  rewritten: '!',
+  moved: '+',
+  unseen: '·',
+  steady: ' ',
+};
+
 interface Props {
   assessments: Assessment[];
   scanned: number;
   contestedTotal: number;
   theme: Theme;
+  /** What this reading stood on. Same string the plain renderer prints. */
+  evidence?: string;
+  /** Condition id to what changed since the last run. */
+  movement?: ReadonlyMap<string, Movement>;
+  /** What moved, already worded by core/recall.ts. */
+  recall?: string;
+  /** Where to open. `moved` when something did, `rounds` when nothing did. */
+  sort?: SortMode;
   notice?: string;
 }
 
-export function App({ assessments, scanned, contestedTotal, theme: initial, notice }: Props) {
+export function App({
+  assessments, scanned, contestedTotal, theme: initial, evidence, movement, recall, sort: opening,
+  notice,
+}: Props) {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
   const [cursor, setCursor] = useState(0);
   const [open, setOpen] = useState(false);
   const [helping, setHelping] = useState(false);
-  const [sort, setSort] = useState<SortMode>('rounds');
+  const [sort, setSort] = useState<SortMode>(opening ?? 'rounds');
   const [theme, setTheme] = useState(initial);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
@@ -63,8 +90,8 @@ export function App({ assessments, scanned, contestedTotal, theme: initial, noti
   }, [stdout]);
 
   const rows = useMemo(
-    () => sortAssessments(filterAssessments(assessments, query), sort),
-    [assessments, query, sort],
+    () => sortAssessments(filterAssessments(assessments, query), sort, movement),
+    [assessments, query, sort, movement],
   );
 
   // A filter that shortens the list must not leave the cursor past the end.
@@ -192,11 +219,17 @@ export function App({ assessments, scanned, contestedTotal, theme: initial, noti
         const on = start + i === cursor;
         const n = a.dispute.rounds;
 
+        const mark = MARKS[movement?.get(a.market.conditionId) ?? 'steady'];
+
         return (
           <Text key={a.market.conditionId || start + i}>
             {/* A gutter bar rather than a full inverse row. Inverse repaints the
                 whole line and buries the one coloured signal in it. */}
-            <Text color={theme.accent}>{on ? '▍ ' : '  '}</Text>
+            <Text color={theme.accent}>{on ? '▍' : ' '}</Text>
+            {/* Second gutter cell: what moved since the last run. A glyph, not
+                a colour, because inside the table colour means dispute rounds
+                and nothing else. Both shades here are existing chrome. */}
+            <Text color={mark === '·' ? theme.dim : theme.accent}>{mark}</Text>
             <Text color={on ? theme.accent : theme.text} bold={on}>
               {clip(a.market.question, nameW).padEnd(nameW)}
             </Text>
@@ -225,10 +258,10 @@ export function App({ assessments, scanned, contestedTotal, theme: initial, noti
         {rows.length > 0 ? `  ·  ${cursor + 1} of ${rows.length}` : ''}
       </Text>
 
+      {recall ? <Text color={theme.dim}>{recall}</Text> : null}
+
       <Text color={theme.dim}>
-        {(assessments[0]?.tier ?? '').includes('chain')
-          ? assessments[0]!.tier
-          : 'positions only, set RECUSE_RPC_URL to read proposer and disputer'}
+        {[assessments[0]?.tier, evidence].filter(Boolean).join('. ')}
       </Text>
 
       {notice ? <Text color={theme.ramp[1]}>{notice}</Text> : null}
@@ -262,6 +295,7 @@ function Help({ theme, width }: { theme: Theme; width: number }) {
     ['t', `cycle the theme: ${themeNames().join(', ')}`],
     ['?', 'this'],
     ['q  esc', 'back, then quit'],
+    ['+  !  ·', 'moved, history rewritten, not seen last run'],
   ];
 
   return (
@@ -288,6 +322,7 @@ function Detail({
 }: { assessment: Assessment; width: number; theme: Theme }) {
   const c = a.concentration;
   const wc = a.winnerConcentration;
+  const paid = a.winners ? winnerMoney(a.winners) : undefined;
   const label = (t: string) => t.padEnd(14);
   const roundsColour = (n: number) => theme.ramp[n === 0 ? 0 : n === 1 ? 1 : 2];
 
@@ -336,6 +371,16 @@ function Detail({
               {`(${wc.topN} of ${wc.holderCount} wallets, ${count(wc.topSize)} of ${count(wc.totalSize)} tokens)`}
             </Text>
           </Text>
+          {paid ? (
+            // Arithmetic, not a model: every held token on the winning side
+            // redeemed for exactly one dollar.
+            <Text color={theme.text}>
+              {label('  net') + `${money(paid.gain)} `}
+              <Text color={theme.dim}>
+                {`(paid ${money(paid.paid)}, redeemed ${money(paid.redeemed)}, ${paid.wallets} wallets read)`}
+              </Text>
+            </Text>
+          ) : null}
         </Box>
       ) : null}
 

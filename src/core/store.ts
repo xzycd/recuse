@@ -38,6 +38,16 @@ export const paths = {
   watchlist: () => join(home(), 'watchlist.json'),
   seen: () => join(home(), 'seen.json'),
   events: () => join(home(), 'events.jsonl'),
+  /**
+   * The radar's own snapshot, deliberately not `seen.json`.
+   *
+   * Sharing one file would let a plain `recuse` run write baselines for markets
+   * the watcher never polled, and the watcher decides whether to report an
+   * event by whether it has a baseline. The daemon would then stay quiet about
+   * the first real move on every market the radar happened to scan first. Two
+   * readers with different jobs get two files.
+   */
+  radar: () => join(home(), 'radar.json'),
 };
 
 async function ensureHome(): Promise<void> {
@@ -122,8 +132,8 @@ export interface SeenState {
   markets: Record<string, Seen>;
 }
 
-export async function readSeen(): Promise<SeenState> {
-  const raw = await readJson<Partial<SeenState>>(paths.seen(), {});
+async function readSnapshots(path: string): Promise<SeenState> {
+  const raw = await readJson<Partial<SeenState>>(path, {});
   const markets: Record<string, Seen> = {};
 
   for (const [key, value] of Object.entries(raw.markets ?? {})) {
@@ -136,7 +146,7 @@ export async function readSeen(): Promise<SeenState> {
   return { baselineAt: raw.baselineAt, markets };
 }
 
-export async function writeSeen(state: SeenState): Promise<void> {
+async function writeSnapshots(path: string, state: SeenState): Promise<void> {
   const entries = Object.entries(state.markets);
 
   // Evict the least recently polled once over the cap. Discovery walks a moving
@@ -147,9 +157,26 @@ export async function writeSeen(state: SeenState): Promise<void> {
       : entries.sort((a, b) => (b[1].at ?? '').localeCompare(a[1].at ?? '')).slice(0, MAX_SEEN);
 
   await writeAtomic(
-    paths.seen(),
+    path,
     `${JSON.stringify({ baselineAt: state.baselineAt, markets: Object.fromEntries(kept) })}\n`,
   );
+}
+
+export async function readSeen(): Promise<SeenState> {
+  return readSnapshots(paths.seen());
+}
+
+export async function writeSeen(state: SeenState): Promise<void> {
+  await writeSnapshots(paths.seen(), state);
+}
+
+/** The radar's last reading. Same shape as the watcher's, different file. */
+export async function readRadar(): Promise<SeenState> {
+  return readSnapshots(paths.radar());
+}
+
+export async function writeRadar(state: SeenState): Promise<void> {
+  await writeSnapshots(paths.radar(), state);
 }
 
 /**
@@ -175,7 +202,7 @@ export async function appendEvents(events: WatchEvent[]): Promise<void> {
  * Streams nothing and holds the file in memory, which is fine: a year of
  * disputes at the observed rate is a few megabytes.
  */
-export async function readEvents(limit = 50): Promise<{ events: WatchEvent[]; skipped: number }> {
+export async function readEventLog(): Promise<{ events: WatchEvent[]; skipped: number }> {
   let body: string;
   try {
     body = await readFile(paths.events(), 'utf8');
@@ -196,5 +223,11 @@ export async function readEvents(limit = 50): Promise<{ events: WatchEvent[]; sk
     }
   }
 
+  return { events, skipped };
+}
+
+/** The most recent events, newest first. */
+export async function readEvents(limit = 50): Promise<{ events: WatchEvent[]; skipped: number }> {
+  const { events, skipped } = await readEventLog();
   return { events: events.reverse().slice(0, limit), skipped };
 }

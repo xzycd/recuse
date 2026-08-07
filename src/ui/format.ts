@@ -105,6 +105,42 @@ export function widthOf(text: string): number {
   return [...text].length;
 }
 
+/** `0x614f…3b8a`. Enough to recognise, and to check against a full one. */
+export function shortAddress(address: string): string {
+  return address.length > 13 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
+}
+
+/**
+ * Label a wallet in a fixed width column.
+ *
+ * Two rules, both load bearing.
+ *
+ * A name never appears without an address. Display names are chosen by the
+ * account, nothing stops one from calling itself `0xdead…beef` or `Polymarket`,
+ * and every finding in this tool is anchored to an address. A table showing
+ * names alone would let its own subjects decide who they appear to be.
+ *
+ * Shortening is all or nothing across a column. Handing a 42 character address
+ * to a 28 cell column produces `0x971f91a412236cc942a6f4485…`, which reads like
+ * an identifier and cannot be checked against anything. Either every row is
+ * full or every row is abbreviated the same way, and the full form is always in
+ * `--json`.
+ */
+export function label(
+  name: string | undefined,
+  address: string,
+  width: number,
+  short: boolean,
+): string {
+  if (!short) return address;
+
+  const tail = shortAddress(address);
+  if (!name) return tail;
+
+  const room = width - widthOf(tail) - 1;
+  return room >= 4 ? `${clip(name, room)} ${tail}` : tail;
+}
+
 export function padEnd(text: string, width: number): string {
   const clipped = clip(text, width);
   return clipped + ' '.repeat(Math.max(0, width - widthOf(clipped)));
