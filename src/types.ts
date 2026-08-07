@@ -72,40 +72,15 @@ export interface Holder {
   value: number;
 }
 
-/** An address that acted on a market's resolution. */
-export interface Actor {
-  address: string;
-  role: 'proposer' | 'disputer' | 'voter';
-  /** Vote weight for voters; bond size for proposers and disputers. */
-  weight: number;
-  /** Block the action landed in, for ordering and auditability. */
-  block?: number;
-  txHash?: string;
-}
-
-/**
- * An actor who holds a position in the market they acted on.
- *
- * This is the whole product, and it is not built. Both halves are public facts
- * and the finding is that they overlap, but reading the acting half needs the
- * oracle logs in `sources/chain.ts`, which nothing calls. Nothing has ever
- * produced one of these.
+/*
+ * `Actor` and `Conflict` used to be declared here: an address that acted on a
+ * resolution, and one that acted on a market it also held. The second is the
+ * thesis of the whole tool. Neither was ever produced, because reading who
+ * acted needs the oracle logs described in `sources/chain.ts`, and that is
+ * unbuilt. They were deleted in 0.6.0 along with the two always-empty fields
+ * they filled on `Assessment`. A type nothing constructs is a plan, and a plan
+ * belongs in DNA.md, where this one is.
  */
-export interface Conflict {
-  address: string;
-  name?: string;
-  role: Actor['role'];
-  weight: number;
-  /** The side they hold. */
-  side: Side;
-  /** What that position is worth in USD. */
-  exposure: number;
-  /**
-   * Whether their action pushed toward the side they hold. Null when the
-   * action's direction is not knowable, which is honest and common.
-   */
-  alignsWithPosition: boolean | null;
-}
 
 /**
  * How much of one side of a market sits in how few hands.
@@ -225,13 +200,17 @@ export interface Assessment {
   winnerConcentration?: Concentration;
   /** The largest buyers of the winning side, largest first. */
   winners?: Winner[];
-  /**
-   * Always empty in this build. `sources/chain.ts` is not wired into an
-   * assessment, so nothing populates these. They stay in the shape because the
-   * JSON contract should not change on the day the oracle reading lands.
+  /*
+   * There is no `actors` or `conflicts` field, and their absence is the point.
+   * Both used to ship as hardcoded empty arrays, on the argument that the JSON
+   * shape should not change on the day the oracle reading lands. That argument
+   * is worth less than what it cost: `"actors": []` tells a consumer that the
+   * oracle was read and nobody was there, which is a confident zero over ground
+   * this build never covers. A caveat says the truth, but a consumer parses
+   * fields and not prose. An absent field cannot be misread, the version policy
+   * allows adding one in any minor release, and until 1.0 the shape is not a
+   * contract anyway.
    */
-  actors: Actor[];
-  conflicts: Conflict[];
   tier: EvidenceTier;
   /** Why this reading is incomplete. Empty means it is not. */
   caveats: string[];

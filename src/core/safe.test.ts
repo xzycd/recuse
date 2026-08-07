@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  isSafeText, redactMessage, redactUrl, safeAddress, safeEndpoint, safeHash, safeText, safeTokenId,
+  redactMessage, redactUrl, safeAddress, safeEndpoint, safeHash, safeText, safeTokenId,
 } from './safe.js';
 
 describe('safeText', () => {
@@ -9,7 +9,10 @@ describe('safeText', () => {
     // homes the cursor, which would let the wallet forge every row above it.
     const attack = '[2J[Hwhale';
     expect(safeText(attack)).toBe('[2J[Hwhale');
-    expect(isSafeText(safeText(attack))).toBe(true);
+    // Idempotent, which is the stronger claim: a second pass finds nothing to
+    // strip, so the first one did not leave a fragment behind that a later
+    // concatenation could reassemble into an escape.
+    expect(safeText(safeText(attack))).toBe(safeText(attack));
   });
 
   it('strips a carriage return, which overwrites the row already printed', () => {

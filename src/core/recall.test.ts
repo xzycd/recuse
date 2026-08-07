@@ -30,8 +30,6 @@ function assessment(m: Market): Assessment {
       contested: m.resolutionSteps.includes('disputed'),
       steps: m.resolutionSteps,
     },
-    actors: [],
-    conflicts: [],
     tier: 'positions',
     caveats: [],
     pool: m.volume,

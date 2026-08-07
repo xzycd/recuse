@@ -13,7 +13,7 @@ const a = (
       deadline: deadline ? new Date(deadline) : undefined,
     },
     concentration: wiped === undefined ? undefined : { meaning: 'wiped', totalSize: wiped },
-    pool, caveats: [], actors: [], conflicts: [], tier: 'positions', fetchedAt: '',
+    pool, caveats: [], tier: 'positions', fetchedAt: '',
   }) as unknown as Assessment;
 
 const list = [
