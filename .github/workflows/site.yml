@@ -48,11 +48,14 @@ jobs:
 
       - run: npm ci
 
-      # The generator imports the compiled engine, so the numbers on the pages
-      # come from the same assess the CLI calls. Tests run first: publishing a
-      # site built from a broken engine is worse than not publishing.
-      - run: npm test
+      # Build first, then test. The generator imports the compiled engine so the
+      # numbers on the pages come from the same assess the CLI calls, and
+      # tools/site.test.ts imports the generator, so running the suite before
+      # there is a dist/ fails on a missing module rather than on anything real.
+      # This workflow had these two the other way round and had never once
+      # passed. Failing a publish is quiet in a way failing CI is not.
       - run: npm run build
+      - run: npm test
 
       - name: Generate
         env:
