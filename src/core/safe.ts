@@ -90,15 +90,6 @@ export function safeText(value: unknown, max = MAX_TEXT): string {
   return out.length > max ? `${out.slice(0, max - 1)}…` : out;
 }
 
-/** True when a string is already safe. Used by tests and by the source guards. */
-export function isSafeText(value: string): boolean {
-  for (const ch of value) {
-    const cp = ch.codePointAt(0);
-    if (cp !== undefined && isUnsafeCodePoint(cp)) return false;
-  }
-  return true;
-}
-
 /**
  * A 0x-prefixed hex address, lowercased, or undefined.
  *

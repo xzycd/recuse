@@ -11,7 +11,8 @@ src/
     gamma.ts      market catalogue and resolution lifecycles
     dataapi.ts    current balances, with the display names accounts chose
     subgraph.ts   cumulative trades, which is how the winning side is recovered
-    chain.ts      optional, gated on RECUSE_RPC_URL
+    chain.ts      the oracle layer, unbuilt. reports that it read nothing,
+                  and validates RECUSE_RPC_URL on every reading
   core/       pure logic, no I/O except where noted
     safe.ts       making remote text safe to put on a terminal. pure
     dispute.ts    parses umaResolutionStatuses into rounds, phase, clock
@@ -22,6 +23,7 @@ src/
     recall.ts     what moved since the last radar run. pure, reuses watch.ts
     queue.ts      lifecycles that never terminated, and how long. pure
     ledger.ts     the event log summarised. pure
+    mcp.ts        the MCP protocol, pure. the engine is injected
     update.ts     version check. checks and prints, never installs
     assess.ts     assembles one answer from every source (does I/O)
     watcher.ts    one poll pass, and the loop (does I/O)
@@ -38,23 +40,26 @@ src/
 tools/
   logo.mjs          regenerates assets/. run after changing the wordmark
   site.mjs          builds site/, flat HTML, no backend and no client JS
+  prepare.mjs       builds on install, so a git install produces a binary
+  reachable.mjs     which symbols the entry point can get to. pure, tested
   housekeeping.mjs  the house rules, checked. run by CI
 .github/workflows/
   ci.yml      build, test and check on node 20 and 22
   site.yml    nightly site build, publishes to Pages
 ```
 
-`core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/recall.ts`, `core/queue.ts`, `core/ledger.ts`, `core/wallet.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
+`core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/recall.ts`, `core/queue.ts`, `core/ledger.ts`, `core/wallet.ts`, `core/mcp.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
 
 ## Commands
 
 ```sh
-npm test          # 277 tests, no network, sub-second
+npm test          # 305 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
 npm run check     # the house rules below, enforced
 npm run site      # regenerate site/ from live data, needs a build first
 node tools/logo.mjs   # regenerate assets/banner.svg and assets/mark.svg
+recuse serve --mcp    # answer over MCP on stdin and stdout
 ```
 
 CI runs `build`, `test` and `check` on Node 20 and 22 for every push and pull request. The site rebuilds nightly and publishes to Pages, and refuses to publish a snapshot with fewer than five pages, because a scan that returned nothing is a failed scan rather than an empty day.
@@ -127,7 +132,31 @@ Before pushing:
 npm run check
 ```
 
-That is `tools/housekeeping.mjs`, and CI runs it too. It checks prose files for em dashes and emoji, source comments for em dashes, and the commit log for attribution trailers. It skips fenced code blocks deliberately: the renderers use `—` as a no-data glyph in a column, the README shows sample output containing it, and this file documents the check. A flat grep flags all three, and a check that cries wolf gets deleted.
+That is `tools/housekeeping.mjs`, and CI runs it too. It checks prose files for em dashes and emoji, source comments for em dashes, the commit log for attribution trailers, and every symbol in `src/` for whether the program can reach it. It skips fenced code blocks deliberately: the renderers use `—` as a no-data glyph in a column, the README shows sample output containing it, and this file documents the check. A flat grep flags all three, and a check that cries wolf gets deleted.
+
+## Nothing unreachable
+
+`npm run check` fails if a symbol in `src/` cannot be reached from `src/cli.ts`. Finish it, wire it up, or delete it. Git keeps whatever you delete.
+
+This rule is here because the alternative was tried twice. `safeEndpoint` lived in a constructor nothing constructed and read as a working defence for weeks. The evidence tier claimed oracle data from a file nothing had wired in. The note written after the first one, grep for call sites and not for definitions, did not prevent the second, because remembering to grep is not a check.
+
+Two things about the implementation matter if you touch it:
+
+**It walks rather than counts.** The deleted chain layer was eight exports that called each other, and three of them had passing tests, so every symbol in it had references and looked used. Reference counting cannot tell a live call graph from an island.
+
+**Tests are not callers.** A symbol only a test can reach is a symbol the program cannot, so test files are not roots and are not scanned. That is deliberate and is the case worth reporting rather than the case to excuse.
+
+The analysis is in `tools/reachable.mjs`, separate from the script that runs it, so it is tested against files built to be dead. Running it over a clean repo proves nothing, which is the same failure mode it exists to catch.
+
+## The MCP surface
+
+`recuse serve --mcp` is JSON-RPC over stdin and stdout, one message per line. No SDK, no dependency.
+
+**stdout is the transport.** Anything that prints corrupts the session. `runServe` calls no banner, no spinner and no update check, and nothing outside `cli.ts` writes to stdout, which is what makes that a one line rule instead of an audit. Keep it that way.
+
+**The consumer is a summariser.** Every other surface here is read by a person who can see the denominator next to the share. A model will keep `85%` and drop the `5 of 100` that made it checkable. So the guardrails are data: `evidence`, `caveats` and `limits` on every payload, a share that ships as one unsplittable string, and what was not covered as a field rather than a footnote. `src/core/mcp.test.ts` asserts all of it, because trimming a payload for size is the change that would look harmless.
+
+**`core/safe.ts` cannot help here.** It strips control characters, not sentences. A display name reading like an instruction reaches a model's context intact. That is stated in SECURITY.md rather than defended against, and the reason it is survivable is that nothing in this tool acts on what it reads.
 
 ## Handing off
 
@@ -159,3 +188,7 @@ A running log. One line each, added when something cost real time to find out an
 - A full address clipped to fit a narrow column reads like an identifier and cannot be checked. Abbreviate the whole column or none of it.
 - Gamma serves `closedTime` as `2025-07-09 00:30:39+00`: a space instead of the T, and a two digit offset where ISO wants four. `new Date` returns Invalid Date, and an unparsed clock reads as "no deadline recorded" rather than as an error. Repair both defects or lose the field silently.
 - The CLOB serves no price history for a settled market. Zero of six checked returned a point, at any interval or explicit timestamp range. Anything wanting price movement against the lifecycle is off the table, and settled markets are the only interesting ones.
+- `prepublishOnly` does not run when npm installs from a git URL. `prepare` does. With `dist/` gitignored, that difference meant `npm i github:...` installed three files, linked no binary, and printed "added 41 packages".
+- A reference count cannot find dead code that references itself. Eight exports calling each other, three with tests, all unreachable. Walk from the entry point instead.
+- Parsing strings out of source before analysing it is a trap. Dropping string bodies turned `${BASE}/markets?${params}` into one token and reported `BASE` as dead in two modules, and a `'` inside a regex character class swallowed the line after it. Strip comments only, and accept missing the dead symbol whose name appears in a string.
+- An empty array in a JSON payload is a claim. `"actors": []` says the oracle was read and nobody was there. Absent says nothing, which was the truth.

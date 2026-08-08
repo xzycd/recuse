@@ -21,10 +21,15 @@ The suit market went five rounds. 52.1 million tokens went to zero when it final
 ## Install
 
 ```sh
-npx recuse
+npm i -g github:xzycd/recuse
 ```
 
-Or `npm i -g recuse`. Node 20 or newer. No API keys, no account, no config file.
+Node 20 or newer. No API keys, no account, no config file.
+
+Not on the npm registry yet, so there is no `npx recuse` and there is no
+`npm i -g recuse`. Both were in this file before they were true, which is a
+small version of the thing this tool exists to catch, so they are gone until
+the name is published.
 
 ## Use
 
@@ -37,6 +42,7 @@ recuse wallet <address>         # one wallet's record, disputed markets first
 recuse players                  # addresses that keep ending up on the losing side
 recuse ledger                   # what your event log has accumulated
 recuse update                   # check for a newer version
+recuse serve --mcp              # answer over MCP, for an agent rather than a person
 recuse market <id> --json       # same data, pipeable
 recuse market <id> --card       # a block sized for pasting into a chat
 ```
@@ -193,6 +199,53 @@ does the same job without this program ever touching `child_process`.
 RECUSE_HOME=~/.recuse-iran recuse watch --once
 ```
 
+## Asking it from an agent
+
+```sh
+recuse serve --mcp
+```
+
+One JSON-RPC message per line on stdin and stdout, which is all MCP over stdio
+is, so this needs no SDK and adds no dependency. Five tools:
+`contested_markets`, `market_record`, `winning_side`, `wallet_record` and
+`resolution_queue`. They call the same engine the commands do, so a tool result
+and a table cannot drift apart.
+
+```json
+{
+  "mcpServers": {
+    "recuse": { "command": "recuse", "args": ["serve", "--mcp"] }
+  }
+}
+```
+
+Everything on this surface is read only. No tool writes a file, touches the
+watchlist, or reaches the event log.
+
+The interesting part is not the protocol. Every other consumer of this engine is
+a person reading a table, and a person can see the denominator sitting next to
+the share. This consumer is a language model, which will summarise, and
+summarising is precisely the operation that keeps `85%` and drops the `5 of 100`
+that made it checkable. A tool built on the argument that people present partial
+pictures as complete ones does not get to hand the raw numbers to the most
+fluent summariser ever built and hope.
+
+So the guardrails travel as data rather than as prose:
+
+- every payload carries `evidence`, `caveats` and `limits` as arrays of short
+  declarative strings, and every tool description says to repeat them
+- a share is never a bare number. It ships as one string that cannot be split:
+  `"reading": "top 5 of 100 held 32.8%"`, alongside the components
+- what was not covered is a field, not a footnote. `contested_markets` states
+  how many scanned markets are missing from its own list, and `winning_side`
+  reports the token floor the subgraph needed before it would answer
+- a lookup that could not be verified comes back as `found: false` rather than
+  as the first row of whatever Gamma returned instead
+
+The `limits` array is the same on every tool: this reports tallies and not
+intent, no proposer or disputer is read by this build, and a display name is not
+an identity.
+
 ## The half of a settled market you cannot normally see
 
 This is the part that took live data to find, and it is the reason the tool exists in this shape.
@@ -294,7 +347,11 @@ Proposer and disputer addresses live in the logs of UMA's Managed Optimistic Ora
 | polygon.drpc.org | rejects ranges it advertises as supported |
 | 1rpc.io/matic | 50 blocks |
 
-At 50 blocks a window, one day of Polygon costs 860 requests, which is why this is the piece that is not finished. The oracle address, the adapter addresses and the topic hashes are decoded and pinned in `src/sources/chain.ts`, so what remains is the reading rather than the research.
+At 50 blocks a window, one day of Polygon costs 860 requests, which is why this is the piece that is not finished.
+
+There used to be about two hundred lines of working JSON-RPC in `src/sources/chain.ts` waiting for it: a windowed log scanner and an event classifier, none of it reachable from anything. It was deleted in 0.6.0. Code that looks finished and runs never is the same failure as a claim about evidence nobody read, one level down, and keeping it warm is how the scheme check on `RECUSE_RPC_URL` sat unexecuted for weeks. The decoded oracle address, adapter addresses and topic hashes survive as prose in that file's header, because the research was the expensive part and the code was not. `git log` has the implementation.
+
+The `Assessment` shape lost its `actors` and `conflicts` fields in the same release. They were always empty arrays, and `"actors": []` tells whatever parses it that the oracle was read and nobody was there.
 
 ## Where the data comes from
 
@@ -313,12 +370,15 @@ The subgraph also reports `outcomeIndex` as null on every record checked, and `N
 ## Build
 
 ```sh
-npm install
-npm test        # 219 tests, no network
+npm install     # also builds, so ./dist/cli.js works straight after
+npm test        # 305 tests, no network, sub-second
 npm run build
+npm run check   # the house rules, enforced
 ```
 
-Two runtime dependencies, ink and react. Chain access is 20 lines of `fetch` against JSON-RPC rather than a web3 library, because the whole job is one method and a string slice.
+Two runtime dependencies, ink and react.
+
+`npm run check` is `tools/housekeeping.mjs`, which CI also runs. It checks prose for em dashes and emoji, the commit log for attribution trailers, and every symbol in `src/` for whether the program can actually reach it. That last one exists because this repo has shipped unreachable code that read as working twice, and the note written down after the first time did not prevent the second, because remembering to grep is not a check. It walks out from `cli.ts` rather than counting references, since the dead chain layer was eight exports that called each other and three of them had passing tests.
 
 Remote text is treated as hostile. Display names are chosen by the same accounts the tool makes claims about, and a name carrying a terminal escape sequence could redraw the table above it. Everything is sanitised where it enters, not where it prints. See [SECURITY.md](SECURITY.md).
 

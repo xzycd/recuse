@@ -144,10 +144,6 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
     concentration: conc,
     winnerConcentration: winnerConc,
     winners,
-    // Always empty. The chain layer is not wired in, and these stay in the
-    // shape so the JSON contract does not change when it is.
-    actors: [],
-    conflicts: [],
     tier,
     caveats,
     pool: market.volume,
