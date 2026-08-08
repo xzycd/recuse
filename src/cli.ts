@@ -17,6 +17,7 @@ import {
   removeFromWatchlist, writeRadar, type SeenState,
 } from './core/store.js';
 import { recall, recallNote } from './core/recall.js';
+import { recuseTools, serve, type Engine } from './core/mcp.js';
 import { snapshot } from './core/watch.js';
 import { runLoop, runPass, type PassResult } from './core/watcher.js';
 import type { EventKind } from './core/watch.js';
@@ -55,6 +56,7 @@ const USAGE = `usage
   recuse wallet <address>     one wallet's record, disputed markets first
   recuse players              addresses left holding losing sides, repeatedly
   recuse update               check whether a newer version was published
+  recuse serve --mcp          answer over MCP, for an agent rather than a person
   recuse --help
 
 watching
@@ -65,6 +67,11 @@ watching
   recuse watch list           show the watchlist and what was last seen
   recuse events               the log of everything that moved
   recuse ledger               what the log has accumulated, summarised
+
+serving
+  recuse serve --mcp          one JSON-RPC message per line on stdin and stdout.
+                              stdout is the transport, so nothing else prints:
+                              no banner, no spinner, no update check.
 
 options
   --json            machine-readable output
@@ -119,6 +126,8 @@ interface Args {
   webhook?: string;
   detail: boolean;
   card: boolean;
+  /** serve: speak MCP. Required, so a bare `serve` does not pick a protocol. */
+  mcp: boolean;
 }
 
 /** Anything under this hammers Gamma for no benefit; disputes do not move in seconds. */
@@ -129,6 +138,7 @@ export function parseArgs(argv: string[]): Args {
     command: 'radar', json: false, plain: false, limit: 25, scan: 600,
     all: false, winners: false, logo: true, help: false,
     once: false, intervalMs: 300_000, discover: false, detail: true, card: false,
+    mcp: false,
   };
   const rest: string[] = [];
 
@@ -145,6 +155,7 @@ export function parseArgs(argv: string[]): Args {
     else if (a === '--discover') args.discover = true;
     else if (a === '--no-detail') args.detail = false;
     else if (a === '--card') args.card = true;
+    else if (a === '--mcp') args.mcp = true;
     else if (a === '--limit') args.limit = Number(argv[++i]) || args.limit;
     else if (a === '--scan') args.scan = Number(argv[++i]) || args.scan;
     else if (a === '--min-pool') args.minPool = Number(argv[++i]) || args.minPool;
@@ -739,6 +750,65 @@ async function runEvents(args: Args): Promise<number> {
   return 0;
 }
 
+/**
+ * Serve the engine over MCP on stdin and stdout.
+ *
+ * The engine is assembled here rather than inside `core/mcp.ts` so that module
+ * stays testable without a network, and so this surface cannot grow a second
+ * way of reading a market that drifts from what the table prints. Every method
+ * below is the same call the matching command makes.
+ *
+ * Nothing writes to stdout except the protocol. No banner, no spinner, no
+ * update check: one stray line and the client sees a parse error and hangs up.
+ * The spinner already writes to stderr and the banner already refuses to draw
+ * into a pipe, so this is a matter of not calling them rather than of
+ * suppressing them.
+ */
+async function runServe(args: Args): Promise<number> {
+  if (!args.mcp) {
+    process.stderr.write(
+      'recuse serve: needs --mcp\n\n'
+        + '  recuse serve --mcp    speak MCP over stdin and stdout\n\n'
+        + 'There is no HTTP server yet. The flag is required rather than assumed so\n'
+        + 'that adding one later does not change what a bare `serve` already does.\n',
+    );
+    return 2;
+  }
+
+  const engine: Engine = {
+    async contested(scan) {
+      const { markets, scanned } = await fetchContestedMarkets(scan);
+      const assessments = await assessAll(markets, {});
+      return { assessments, scanned, contested: markets.length };
+    },
+    async market(idOrSlug) {
+      const market = await fetchMarket(idOrSlug);
+      if (!market) return undefined;
+      return assess(market, { winners: true });
+    },
+    async winners(idOrSlug, limit) {
+      const market = await fetchMarket(idOrSlug);
+      if (!market) return undefined;
+      return assess(market, { winners: true, winnerLimit: limit, winnerNames: true });
+    },
+    wallet(address, limit) {
+      return assessWallet(address, { limit });
+    },
+    async pending(scan) {
+      const { markets } = await fetchBothStates(scan);
+      return queue(markets);
+    },
+  };
+
+  await serve(
+    { input: process.stdin, write: (line) => process.stdout.write(`${line}\n`) },
+    recuseTools(engine),
+    { name: 'recuse', version: version() },
+  );
+
+  return 0;
+}
+
 function runThemeList(args: Args): number {
   const style = detectStyle({ colour: args.colour });
   const list = Object.values(THEMES).map((t) => ({ name: t.name, blurb: t.blurb, ramp: t.ramp }));
@@ -795,6 +865,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         return await runEvents(args);
       case 'update':
         return await runUpdate(args);
+      case 'serve':
+        return await runServe(args);
       default:
         process.stderr.write(`unknown command: ${args.command}\n\n${USAGE}`);
         return 2;
