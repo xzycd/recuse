@@ -12,8 +12,8 @@
  */
 
 import {
-  accent, bold, clip, count, dim, label, meter, money, padEnd, padStart, paintRounds, pct, rule,
-  until,
+  accent, bold, clip, count, dim, displayName, label, meter, money, padEnd, padStart, paintRounds,
+  pct, rule, shortAddress, until,
 } from './format.js';
 import { formatSteps } from '../core/dispute.js';
 import { winnerMoney } from '../core/capture.js';
@@ -251,12 +251,17 @@ export function renderPlayers(
   for (const p of players.slice(0, 40)) {
     // The name cell is padded before it is dimmed, or the escape sequence would
     // eat cells the column thought it had.
-    const name = p.name
-      ? padEnd(p.name, nameW)
+    const named = displayName(p.name, p.address);
+    const name = named
+      ? padEnd(named, nameW)
       : dim(padEnd('(anon)', nameW), style);
 
     lines.push(
-      padEnd(p.address.slice(0, 12), 14) +
+      // `0x614f…3b8a`, not the first twelve characters. A full address cut to
+      // fit reads like an identifier and cannot be checked against anything,
+      // which is the rule the winners table already follows. The full form is
+      // in --json.
+      padEnd(shortAddress(p.address), 14) +
         name +
         padStart(String(p.losses), 10) +
         padStart(String(p.appearances), 5) +
@@ -359,11 +364,14 @@ export function renderWinners(a: Assessment, winners: Winner[], style: Style): s
   lines.push(
     dim('from trades, not balances. these wallets redeemed and hold nothing now.', style),
   );
-  // Every caveat about this reading, not a chosen subset. The truncation one
-  // matters most: a share is of what came back, and the page size is ours.
-  for (const c of a.caveats) {
-    if (/^(winning side|more winning)/.test(c)) lines.push(dim(`  · ${c}`, style));
-  }
+  // Every caveat about this reading, not a chosen subset. This used to keep
+  // only the two that start "winning side" and "more winning", which dropped
+  // the floor the subgraph needed, the count of names that could not be looked
+  // up, and the note that no oracle data was read at all. The comment already
+  // said every one of them, which is the version that was right: the caveats
+  // are assembled as data precisely so no surface can quietly choose among
+  // them, and the empty-winners branch above prints the whole list.
+  for (const c of a.caveats) lines.push(dim(`  · ${clip(c, style.width - 4)}`, style));
 
   return lines.join('\n');
 }
@@ -505,7 +513,7 @@ export function renderWatchlist(
 
 /** A signed dollar figure, so a loss never reads like a gain at a glance. */
 function signed(n: number): string {
-  return `${n >= 0 ? '+' : '-'}${money(Math.abs(n)).replace('$', '$')}`;
+  return `${n >= 0 ? '+' : '-'}${money(Math.abs(n))}`;
 }
 
 /**
@@ -531,9 +539,11 @@ export function renderWallet(
   const lines: string[] = [];
 
   // The address leads, always. A name is chosen by the account and the address
-  // is what every row below joins on.
+  // is what every row below joins on. A name that is just the address again is
+  // dropped rather than printed twice in two different cases.
+  const walletName = displayName(ledger.name, ledger.address);
   lines.push(
-    bold(ledger.address, style) + (ledger.name ? dim(`  ${ledger.name}`, style) : ''),
+    bold(ledger.address, style) + (walletName ? dim(`  ${walletName}`, style) : ''),
   );
 
   const resolved = ledger.won + ledger.lost + ledger.split;
@@ -709,11 +719,18 @@ export function renderLedger(s: LedgerSummary, style: Style): string {
     lines.push('');
     lines.push(dim('moved most often', style));
     const nameW = Math.max(20, w - 22);
+    // Both numbers are counts and neither is a duration, which is worth saying
+    // in a view whose header is measuring the log in days. The rounds column
+    // read `3d` here and `3×` in every other table in the tool, so next to an
+    // events count it parsed as three days rather than three disputes.
+    lines.push(
+      dim('  ' + padEnd('MARKET', nameW) + padStart('EVENTS', 6) + padStart('RDS', 5), style),
+    );
     for (const m of s.busiest) {
       lines.push(
         '  ' + padEnd(m.question, nameW) +
           padStart(`${m.events}×`, 6) +
-          paintRounds(m.rounds, padStart(m.rounds > 0 ? `${m.rounds}d` : '·', 5), style),
+          paintRounds(m.rounds, padStart(m.rounds > 0 ? `${m.rounds}×` : '·', 5), style),
       );
     }
   }
@@ -722,6 +739,9 @@ export function renderLedger(s: LedgerSummary, style: Style): string {
     lines.push('');
     lines.push(dim('last seen unfinished', style));
     const nameW = Math.max(20, w - 26);
+    lines.push(
+      dim('  ' + padEnd('MARKET', nameW) + padStart('LAST STEP', 11) + padStart('SEEN', 7), style),
+    );
     for (const m of s.unfinished) {
       lines.push(
         '  ' + padEnd(m.question, nameW) +

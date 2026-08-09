@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  clip, count, label, meter, money, padEnd, padStart, pct, shortAddress, until, widthOf,
+  clip, count, displayName, label, meter, money, padEnd, padStart, pct, shortAddress, until,
+  widthOf,
 } from './format.js';
 
 describe('clip', () => {
@@ -93,8 +94,59 @@ describe('until', () => {
   });
 });
 
+describe('displayName', () => {
+  const ADDR = '0x614f8c216086a1b7eead36b89b456938406d3b8a';
+
+  it('keeps a real name', () => {
+    expect(displayName('NewDarkShark', ADDR)).toBe('NewDarkShark');
+  });
+
+  it('drops a name that is only the row own address, whatever the case', () => {
+    // Polymarket defaults the display name to the address, so this is the
+    // common case rather than an edge one. Printed, it filled the widest
+    // column in the table with the anchor column again, clipped.
+    expect(displayName(ADDR, ADDR)).toBeUndefined();
+    expect(displayName(ADDR.toUpperCase().replace('0X', '0x'), ADDR)).toBeUndefined();
+  });
+
+  it('drops a name the API already truncated to a fragment of that address', () => {
+    // Pinned to a real record. data-api serves this name at 40 characters for
+    // a 42 character address, ellipsis and all, so it is neither equal to the
+    // address nor the length of one, and it rendered as an identifier nobody
+    // could check against anything.
+    const real = '0x7ee7b7fe80641be006601fce0d43d0cd0a5517b0';
+    expect(displayName('0x7Ee7B7fe80641bE006601Fce0D43D0CD0A551…', real)).toBeUndefined();
+    expect(displayName('0x7Ee7B7fe80641bE006601Fce0D43D0CD0A551...', real)).toBeUndefined();
+  });
+
+  it('keeps a truncated address that is not this row own', () => {
+    expect(displayName('0xdeadbeefdeadbeefdeadbeefdead…', ADDR))
+      .toBe('0xdeadbeefdeadbeefdeadbeefdead…');
+  });
+
+  it('does not mistake a name that merely starts with 0x for an address', () => {
+    expect(displayName('0xTrader', ADDR)).toBe('0xTrader');
+  });
+
+  it('shortens a name that is a different address rather than clipping it', () => {
+    // An account calling itself by an address that is not its own is worth
+    // seeing. Trailing off mid identifier is what makes it uncheckable.
+    const other = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    expect(displayName(other, ADDR)).toBe('0xdead…beef');
+  });
+
+  it('treats blank and whitespace names as no name', () => {
+    expect(displayName(undefined, ADDR)).toBeUndefined();
+    expect(displayName('   ', ADDR)).toBeUndefined();
+  });
+});
+
 describe('label', () => {
   const ADDR = '0x614f8c216086a1b7eead36b89b456938406d3b8a';
+
+  it('drops a name that repeats the address it is anchored to', () => {
+    expect(label(ADDR, ADDR, 30, true)).toBe('0x614f…3b8a');
+  });
 
   it('never lets a chosen name replace the address it is a claim about', () => {
     // The whole point. A wallet that calls itself another wallet's address, or

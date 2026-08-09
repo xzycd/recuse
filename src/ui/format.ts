@@ -111,6 +111,42 @@ export function shortAddress(address: string): string {
 }
 
 /**
+ * A display name worth printing beside an address.
+ *
+ * Polymarket defaults an account's display name to its own address, and plenty
+ * of accounts never change it. So a name column fills up with entries like
+ * `0x7Ee7B7fe80641bE006601Fce0D43D0CD0A551…`, which is the anchor column
+ * repeated, in the wrong case, clipped to a width that makes it uncheckable.
+ * That is precisely the identifier failure `label` below exists to refuse,
+ * arriving through the one field the account controls.
+ *
+ * A name that is the row's own address is dropped, because the anchor already
+ * carries it and the row is not named. A name that is some other address is
+ * kept, since an account calling itself by an address that is not its own is
+ * worth seeing, and shortened, so what is shown can be checked against
+ * something rather than trailing off mid identifier.
+ */
+export function displayName(name: string | undefined, address: string): string | undefined {
+  const trimmed = name?.trim();
+  if (!trimmed) return undefined;
+
+  // The data API serves some of these already truncated, ellipsis included:
+  // `0x7Ee7B7fe80641bE006601Fce0D43D0CD0A551…` arrives at 40 characters for a
+  // 42 character address. So the fragment is not equal to the address and not
+  // the length of one, and a check for either misses every real case.
+  const bare = trimmed.replace(/(?:…|\.\.\.)$/, '');
+  if (!/^0x[0-9a-f]{4,40}$/i.test(bare)) return trimmed;
+
+  // A prefix of the row's own address, at whatever length it was cut to, is the
+  // account not having chosen a name.
+  if (address.trim().toLowerCase().startsWith(bare.toLowerCase())) return undefined;
+
+  // Some other address. Worth seeing, and shortened when it is whole so it can
+  // be read against the anchor beside it.
+  return bare.length === 42 ? shortAddress(bare) : trimmed;
+}
+
+/**
  * Label a wallet in a fixed width column.
  *
  * Two rules, both load bearing.
@@ -135,10 +171,11 @@ export function label(
   if (!short) return address;
 
   const tail = shortAddress(address);
-  if (!name) return tail;
+  const shown = displayName(name, address);
+  if (!shown) return tail;
 
   const room = width - widthOf(tail) - 1;
-  return room >= 4 ? `${clip(name, room)} ${tail}` : tail;
+  return room >= 4 ? `${clip(shown, room)} ${tail}` : tail;
 }
 
 export function padEnd(text: string, width: number): string {
