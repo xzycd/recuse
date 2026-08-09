@@ -8,6 +8,28 @@ While this is `0.x`, both can change. From `1.0` the JSON shapes are the contrac
 
 Dates are the day the work landed, not the day it was published.
 
+## 0.7.0, 2026-08-09
+
+**Two thirds of the contested set was being reported as markets nobody won.** The subgraph that rebuilds the winning side is about seven months behind the chain. Its last indexed trade is 2026-01-05, and it answers a market it never reached with an empty list and HTTP 200, which is byte for byte how it answers a market nobody traded. `recuse winners` printed "no winning positions were returned for this market" over a $375M market with two dispute rounds, and `--json` handed a consumer `"winners": []`.
+
+In a 600 market scan, 25 of 38 contested markets closed after that head. This is the failure this project exists to catch, arriving from the one direction nobody was watching: not a scan that swallowed its errors, but a source that had no errors to report.
+
+The head is now read once per run, from an unfiltered sorted query that costs nothing, and any market closing after it is reported as not read. The table says so instead of the old line, `--json` carries `tradeIndexEndsAt` beside the empty array, and the MCP payload sets `winningSideRead: false` and says an empty list there never means nobody won. A head that cannot be read produces no claim in either direction, because not knowing how far the index reaches is not the same as knowing it reaches this market.
+
+Nothing about the losing side, the lifecycle, the queue or the watcher was affected. Those read Gamma and are current. It is only the trade-rebuilt half that stops in January, and now it says so.
+
+**`recuse regulars`** is the cross-market question `winners` only answers one market at a time: who keeps ending up on the winning side of contested markets. It is the mirror of `players` and it could not have been a column on it, because the two count different things from different sources. Losers sit in balances and cost one holder lookup. Winners redeemed, their balances are zero, and each one has to be rebuilt from cumulative trades at a query per market.
+
+The distribution is what makes it worth printing. Across 20 scored markets, 494 wallets won at least one, 117 won more than one, and the top wallet took 11. A count that varies like that is a finding; the 100% rate column deleted in 0.5.0 was not.
+
+Every row carries the markets scored as its denominator, and the denominator is markets where a winning position was actually visible, not markets opened. A market the store refused, a market past the index and a market where nothing cleared the floor are three different things and are counted separately, because folding them together is what produced the bug above. Names are looked up for the visible rows only, and a row below that line renders as unread rather than as unnamed, which is the same distinction one more time.
+
+`repeat_winners` is the matching MCP tool, with the win count and its denominator shipped as one string that cannot be split.
+
+**Two date parsers became one.** `core/dispute.ts` and `core/queue.ts` each had a private one and only `queue` knew that `closedTime` arrives as `2025-07-09 00:30:39+00`, so which fields a module could read depended on which module was asking.
+
+Smaller: `recuse winners` said `? side won` on every market past the trade index, reading the side off the trades it had not fetched rather than off the prices, which were sitting right there and are not in doubt.
+
 ## 0.6.1, 2026-08-09
 
 **The installed binary did nothing at all.** `npm i -g github:xzycd/recuse` linked the bin, printed no warning, and then every command exited 0 with empty stdout. The guard at the foot of `cli.ts` asked whether the module URL ended with the basename of `process.argv[1]`. npm links `bin` as a symlink named `recuse`, node leaves `argv[1]` pointing at that symlink, and `import.meta.url` resolves to `dist/cli.js`, so the question being asked was whether `cli.js` ends with `recuse`. It does not.

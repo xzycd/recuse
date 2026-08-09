@@ -19,7 +19,7 @@
  * slow, from here, and pretending otherwise would be inventing a finding.
  */
 
-import { parseDispute } from './dispute.js';
+import { parseDispute, parseMarketDate } from './dispute.js';
 import type { DisputeState, Market, ResolutionStep } from '../types.js';
 
 /** Steps that mean the lifecycle finished. Everything else is still in flight. */
@@ -52,26 +52,11 @@ export interface QueueScan {
   undated: number;
 }
 
-/**
- * Parse the two date shapes Gamma serves.
- *
- * `endDate` and `umaEndDate` are ISO. `closedTime` is
- * `2025-07-09 00:30:39+00`, which is not: a space instead of the T, and a two
- * digit offset where ISO wants four or a Z. Both defects have to be repaired or
- * `new Date` returns Invalid Date and the market silently loses its clock,
- * which would sort it to the bottom as undated rather than to the top as the
- * oldest thing in the queue.
- */
-function parseDate(value: string | undefined): Date | undefined {
-  if (!value) return undefined;
-
-  const normalised = value
-    .replace(' ', 'T')
-    .replace(/([+-]\d{2})$/, '$1:00');
-
-  const d = new Date(normalised);
-  return Number.isNaN(d.getTime()) ? undefined : d;
-}
+// The date repair this file used to own now lives in core/dispute.ts, because
+// there were two copies and only this one knew about the `closedTime` shape.
+// Losing a clock here sorts a market to the bottom as undated rather than to
+// the top as the oldest thing in the queue, which is why it is repaired at all.
+const parseDate = parseMarketDate;
 
 /**
  * Split a scanned set into what finished and what did not.

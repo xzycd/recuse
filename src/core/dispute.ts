@@ -46,9 +46,27 @@ function derivePhase(steps: ResolutionStep[], market?: Pick<Market, 'closed'>): 
   return market?.closed ? 'settled' : 'undisputed';
 }
 
-function parseDate(value: unknown): Date | undefined {
+/**
+ * Parse the two date shapes Gamma serves.
+ *
+ * `endDate` and `umaEndDate` are ISO. `closedTime` is `2025-07-09 00:30:39+00`,
+ * which is not: a space instead of the T, and a two digit offset where ISO
+ * wants four or a Z. Both defects have to be repaired or `new Date` returns
+ * Invalid Date and the market silently loses its clock, which reads as "no
+ * deadline recorded" rather than as an error.
+ *
+ * One parser rather than two. This file and `core/queue.ts` each had their own,
+ * and only one of them knew about the `closedTime` shape, so which fields could
+ * be read depended on which module was asking.
+ */
+export function parseMarketDate(value: unknown): Date | undefined {
   if (typeof value !== 'string' || value === '') return undefined;
-  const d = new Date(value);
+
+  const normalised = value
+    .replace(' ', 'T')
+    .replace(/([+-]\d{2})$/, '$1:00');
+
+  const d = new Date(normalised);
   return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
@@ -68,7 +86,7 @@ export function parseDispute(market: Market): DisputeState {
     rounds,
     phase: derivePhase(steps, market),
     contested: rounds > 0,
-    deadline: parseDate(market.umaEndDate) ?? parseDate(market.endDate),
+    deadline: parseMarketDate(market.umaEndDate) ?? parseMarketDate(market.endDate),
     steps,
   };
 }

@@ -8,7 +8,7 @@
 
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { assess, assessAll, assessWallet, tallyRepeatPlayers } from './core/assess.js';
+import { assess, assessAll, assessWallet, tallyRegulars, tallyRepeatPlayers } from './core/assess.js';
 import { checkForUpdate, updateNotice, INSTALL_COMMAND } from './core/update.js';
 import { checkWebhook } from './core/notify.js';
 import { chainNote } from './sources/chain.js';
@@ -30,8 +30,8 @@ import { splash } from './ui/logo.js';
 import { startSpinner } from './ui/loading.js';
 import {
   renderCard, renderEvent, renderLedger, renderMarket, renderPassSummary, renderPlayers,
-  renderQueue, renderRadar, renderThemes, renderWallet, renderWatchlist, renderWatchStart,
-  renderWinners,
+  renderQueue, renderRadar, renderRegulars, renderThemes, renderWallet, renderWatchlist,
+  renderWatchStart, renderWinners,
 } from './ui/plain.js';
 import { colourise, THEMES, themeNames } from './ui/theme.js';
 
@@ -56,6 +56,7 @@ const USAGE = `usage
   recuse winners <id|slug>    who bought the side that won, and for how much
   recuse wallet <address>     one wallet's record, disputed markets first
   recuse players              addresses left holding losing sides, repeatedly
+  recuse regulars             addresses on the winning side, repeatedly
   recuse update               check whether a newer version was published
   recuse serve --mcp          answer over MCP, for an agent rather than a person
   recuse --help
@@ -491,6 +492,9 @@ async function runWinners(args: Args): Promise<number> {
       question: assessment.market.question,
       concentration: assessment.winnerConcentration,
       winners: assessment.winners ?? [],
+      // Travels with the empty array it explains. Without it a consumer reads
+      // `"winners": []` as a market nobody won.
+      ...(assessment.tradeIndexEndsAt ? { tradeIndexEndsAt: assessment.tradeIndexEndsAt } : {}),
       caveats: assessment.caveats,
     });
     return 0;
@@ -554,6 +558,40 @@ async function runPlayers(args: Args): Promise<number> {
   }
 
   emit(renderPlayers(result.players, result, style));
+  return 0;
+}
+
+/**
+ * The winning side, across markets rather than within one.
+ *
+ * Costs a subgraph query per market, so the default scan is smaller than the
+ * radar's and the spinner counts markets rather than rows. `players` is the
+ * cheap mirror of this and reads balances instead.
+ */
+async function runRegulars(args: Args): Promise<number> {
+  const style = detectStyle({ colour: args.colour, theme: args.theme });
+  showSplash(args, style);
+
+  const spinner = args.json
+    ? { update() {}, stop() {} }
+    : startSpinner('rebuilding winning sides', { theme: style.theme, depth: style.depth });
+
+  let scan;
+  try {
+    const { markets } = await fetchContestedMarkets(args.scan);
+    scan = await tallyRegulars(markets.slice(0, args.limit), {}, (done, total) =>
+      spinner.update(`${done}/${total} markets`),
+    );
+  } finally {
+    spinner.stop();
+  }
+
+  if (args.json) {
+    emitJson(scan);
+    return 0;
+  }
+
+  emit(renderRegulars(scan, style));
   return 0;
 }
 
@@ -799,6 +837,10 @@ async function runServe(args: Args): Promise<number> {
       const { markets } = await fetchBothStates(scan);
       return queue(markets);
     },
+    async regulars(scan, limit) {
+      const { markets } = await fetchContestedMarkets(scan);
+      return tallyRegulars(markets.slice(0, limit));
+    },
   };
 
   await serve(
@@ -860,6 +902,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         return await runWallet(args);
       case 'players':
         return await runPlayers(args);
+      case 'regulars':
+        return await runRegulars(args);
       case 'watch':
         return await runWatch(args);
       case 'events':

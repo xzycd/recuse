@@ -185,6 +185,70 @@ export async function fetchTokenPositions(
   return { positions: [], floor: 0, truncated: false, failed: lastError.slice(0, 160) };
 }
 
+/** How far the trade index actually reaches. */
+export interface IndexHead {
+  /** ISO time of the most recent trade indexed. Absent when it could not be read. */
+  lastTradeAt?: string;
+  /** Head block the store has processed. */
+  block?: number;
+  /** Why the head is unknown. An unknown head is never treated as current. */
+  failed?: string;
+}
+
+/** Re-read at most this often. A watcher runs for days and this does move. */
+const HEAD_TTL_MS = 15 * 60 * 1000;
+let headCache: { at: number; value: IndexHead } | undefined;
+
+/**
+ * When the trade index stops.
+ *
+ * This exists because an empty position list has two completely different
+ * meanings and the store reports them identically. Asked for the winning side
+ * of a market that settled after the last block this subgraph processed, it
+ * answers `[]` with HTTP 200 and no error, exactly as it would for a market
+ * nobody traded. Measured on 2026-08-09 the head was 2026-01-05, 215 days back,
+ * and 25 of 38 contested markets in a 600 market scan closed after it. Every
+ * one of them was being reported as a market with no winning positions.
+ *
+ * So the head travels with any reading built on trades, and a caller that finds
+ * nothing past it says "not covered" rather than "nobody was there". That
+ * distinction is the whole reason this project exists.
+ *
+ * Unfiltered and sorted on an indexed column, which is the one shape this store
+ * answers quickly: the same query with a `where` clause on the market times out
+ * every time. `_meta` rides along in the same request and costs nothing.
+ */
+export async function fetchIndexHead(opts: { timeoutMs?: number } = {}): Promise<IndexHead> {
+  const now = Date.now();
+  if (headCache && now - headCache.at < HEAD_TTL_MS) return headCache.value;
+
+  const gql = '{ _meta { block { number } } '
+    + 'enrichedOrderFilleds(orderBy: timestamp, orderDirection: desc, first: 1) { timestamp } }';
+
+  let value: IndexHead;
+  try {
+    const data = await query<{
+      _meta?: { block?: { number?: number } };
+      enrichedOrderFilleds?: { timestamp?: string }[];
+    }>(JSON.stringify({ query: gql }), opts.timeoutMs ?? 15_000);
+
+    const seconds = Number(data.enrichedOrderFilleds?.[0]?.timestamp);
+    value = {
+      // Checked before coercing, because `Number(null)` is 0 and a head of zero
+      // would mark every market ever as beyond the index.
+      lastTradeAt: Number.isFinite(seconds) && seconds > 0
+        ? new Date(seconds * 1000).toISOString()
+        : undefined,
+      block: data._meta?.block?.number,
+    };
+  } catch (err) {
+    value = { failed: redactMessage((err as Error).message ?? String(err)).slice(0, 160) };
+  }
+
+  headCache = { at: now, value };
+  return value;
+}
+
 /** A position held by one wallet, before it is joined to a market. */
 export interface WalletPosition extends TokenPosition {
   /** The outcome token. Parsed from the position id, not from a join. */

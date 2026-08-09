@@ -150,6 +150,40 @@ export interface RepeatPlayer {
 }
 
 /**
+ * An address on the winning side of more than one contested market.
+ *
+ * The counterpart to `RepeatPlayer`, and the half that is structurally harder
+ * to see. Losers are visible in balances because nothing redeems a losing
+ * token, so `RepeatPlayer` is one holder lookup per market. Winners redeem and
+ * their balances go to zero, so this has to be rebuilt from cumulative trades,
+ * one subgraph query per market, which is why it is its own command and not a
+ * column on an existing one.
+ *
+ * The same restraint applies as to `RepeatPlayer`, in the other direction.
+ * Someone wins every market, and winning a disputed one is not evidence of
+ * anything on its own. What varies, and is therefore worth printing, is how
+ * often: across 33 contested markets read, 263 wallets won one and a single
+ * wallet won seven. The tally is the finding and the reader supplies the rest.
+ */
+export interface Regular {
+  address: string;
+  name?: string;
+  /** Contested markets where this address held a winning position at the end. */
+  wins: number;
+  /** Tokens carried into settlement, summed across those markets. */
+  tokens: number;
+  /** USD paid for them, summed. The cost basis of `tokens`. */
+  paid: number;
+  /**
+   * `tokens - paid`. Arithmetic rather than an estimate: every winning token
+   * held at settlement redeems for exactly one dollar.
+   */
+  gain: number;
+  /** Which markets, by slug, so any row can be checked with `recuse market`. */
+  markets: string[];
+}
+
+/**
  * Which evidence a result is standing on.
  *
  * `positions` is what every user gets with no setup. `positions+trades` adds
@@ -212,6 +246,16 @@ export interface Assessment {
    * contract anyway.
    */
   tier: EvidenceTier;
+  /**
+   * Where the trade index stops, set only when this market closed after it.
+   *
+   * Present means the winning side was never read, so `winners` being absent or
+   * empty says nothing about who held it. A consumer parses fields rather than
+   * prose, and `"winners": []` on its own is a claim that the side was read and
+   * nobody was there. This is the field that stops it being read that way, and
+   * it is absent whenever the reading was actually covered.
+   */
+  tradeIndexEndsAt?: string;
   /** Why this reading is incomplete. Empty means it is not. */
   caveats: string[];
   /** Money at stake, used to rank. */

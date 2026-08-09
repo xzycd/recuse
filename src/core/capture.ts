@@ -13,7 +13,7 @@
  */
 
 import type {
-  Concentration, Holder, Market, RepeatPlayer, Side, Winner,
+  Concentration, Holder, Market, Regular, RepeatPlayer, Side, Winner,
 } from '../types.js';
 
 /**
@@ -230,6 +230,70 @@ export function repeatPlayers(outcomes: MarketOutcome[], minAppearances = 2): Re
     .sort((a, b) => b.losses - a.losses || b.size - a.size);
 }
 
+/** One market's winning side, for the cross-market tally below. */
+export interface WinningOutcome {
+  /** Slug or condition id. Carried through so a row can name its markets. */
+  market: string;
+  winners: Winner[];
+}
+
+/**
+ * Tally addresses across the winning sides of contested markets.
+ *
+ * The mirror of `repeatPlayers`, and the reason it has to exist separately.
+ * That function counts losses because balances only ever show losers. This one
+ * counts wins, which balances cannot see at all, so its input is rebuilt from
+ * trades by the caller, one subgraph query per market.
+ *
+ * `net` is the filter, not `bought`. A wallet that bought the winning side and
+ * sold out before resolution was not paid, and counting it as a win would make
+ * this a table of people who touched the right token rather than people who
+ * held it. Redemption is not an orderbook sale, so a wallet that redeemed still
+ * has its `net` intact.
+ *
+ * `minWins` defaults to 2 for the same reason `minAppearances` does: winning
+ * one market is what happens to roughly three quarters of everyone in this
+ * data, and a list including them is a list of participants, not a finding.
+ */
+export function repeatWinners(outcomes: WinningOutcome[], minWins = 2): Regular[] {
+  const tally = new Map<string, Regular>();
+
+  for (const { market, winners } of outcomes) {
+    // One entry per address per market. The subgraph returns a single position
+    // per wallet per token, so this is defensive rather than load bearing, and
+    // it is the same guard `repeatPlayers` carries for the same reason.
+    const seen = new Set<string>();
+
+    for (const w of winners) {
+      if (w.net <= 0 || seen.has(w.address)) continue;
+      seen.add(w.address);
+
+      const entry = tally.get(w.address) ?? {
+        address: w.address,
+        name: w.name,
+        wins: 0,
+        tokens: 0,
+        paid: 0,
+        gain: 0,
+        markets: [],
+      };
+
+      entry.wins += 1;
+      entry.tokens += w.net;
+      entry.paid += w.netSpent;
+      entry.gain += w.net - w.netSpent;
+      entry.markets.push(market);
+      entry.name ??= w.name;
+
+      tally.set(w.address, entry);
+    }
+  }
+
+  return [...tally.values()]
+    .filter((r) => r.wins >= minWins)
+    .sort((a, b) => b.wins - a.wins || b.gain - a.gain);
+}
+
 /**
  * Caveats that apply to a reading, in the order they undermine it.
  *
@@ -245,6 +309,11 @@ export function caveatsFor(opts: {
   /** Smallest winning position requested, in tokens. */
   winnerFloor?: number;
   winnersTruncated?: boolean;
+  /**
+   * The trade index stops before this market closed, so nothing was read about
+   * its winning side. ISO time of the last indexed trade.
+   */
+  beyondIndex?: string;
 }): string[] {
   const out: string[] = [];
 
@@ -259,6 +328,17 @@ export function caveatsFor(opts: {
   }
 
   if (opts.settled) {
+    // Ahead of every other winner caveat, because it says the reading never
+    // happened. The store answers a market it has not reached with an empty
+    // list and HTTP 200, identically to a market nobody traded, so without
+    // this line "no winning positions" reads as "nobody won".
+    if (opts.beyondIndex) {
+      out.push(
+        `the trade index stops at ${opts.beyondIndex.slice(0, 10)} and this market closed after that, `
+          + 'so the winning side was not read rather than found empty',
+      );
+    }
+
     if (opts.winnersFailed) {
       // The distinction that matters: the winning side was not read, as opposed
       // to being read and found empty. Saying nothing here would leave the

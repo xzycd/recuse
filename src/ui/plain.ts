@@ -16,11 +16,11 @@ import {
   pct, rule, shortAddress, until,
 } from './format.js';
 import { formatSteps } from '../core/dispute.js';
-import { winnerMoney } from '../core/capture.js';
+import { winnerMoney, winningSide } from '../core/capture.js';
 import { waited, type Pending, type QueueScan } from '../core/queue.js';
 import { span, type LedgerSummary } from '../core/ledger.js';
 import type { Style } from './format.js';
-import type { Assessment, Concentration, RepeatPlayer, Winner } from '../types.js';
+import type { Assessment, Concentration, Regular, RepeatPlayer, Winner } from '../types.js';
 import type { WatchEvent } from '../core/watch.js';
 
 /**
@@ -282,6 +282,152 @@ export function renderPlayers(
 }
 
 /**
+ * Who keeps ending up on the winning side of contested markets.
+ *
+ * The counterpart to `renderPlayers`, and the numbers are not comparable with
+ * it: that table counts balances, this one counts trades, and the footer says
+ * so on both. `wins` carries `marketsRead` as its denominator on every row,
+ * because "won 5" means nothing without how many were opened.
+ */
+export function renderRegulars(
+  scan: {
+    regulars: Regular[];
+    marketsRead: number;
+    marketsScored: number;
+    marketsFailed: number;
+    undecided: number;
+    empty: number;
+    beyondIndex: number;
+    indexHead?: string;
+    floorLow: number;
+    floorHigh: number;
+    floorRaised: number;
+    wallets: number;
+    namesAsked: number;
+    namesFailed: number;
+  },
+  style: Style,
+): string {
+  const lines: string[] = [];
+
+  lines.push(
+    bold('regulars', style) +
+      dim(` · winning side of ${scan.marketsScored} contested markets rebuilt from trades`, style),
+  );
+  lines.push(rule(style));
+
+  if (scan.regulars.length === 0) {
+    lines.push(
+      dim(
+        scan.marketsScored === 0
+          ? 'no winning side could be rebuilt for any market scanned.'
+          : `no address won more than one of the ${scan.marketsScored} markets scored.`,
+        style,
+      ),
+    );
+    if (scan.marketsFailed > 0) {
+      lines.push(dim(`${scan.marketsFailed} markets could not be read at all.`, style));
+    }
+    return lines.join('\n');
+  }
+
+  const nameW = Math.max(12, style.width - 46);
+
+  lines.push(
+    dim(
+      padEnd('ADDRESS', 14) + padEnd('NAME', nameW) +
+        padStart('WON', 5) + padStart('OF', 5) + padStart('TOKENS', 9) + padStart('NET', 9),
+      style,
+    ),
+  );
+
+  scan.regulars.slice(0, 40).forEach((r, i) => {
+    // Padded before dimming, or the escape sequence eats cells the column
+    // budgeted for. Same rule as every other table here.
+    const named = displayName(r.name, r.address);
+    // Three states, not two. `(anon)` is a claim that the account has no name,
+    // and it can only be made about a row a request was actually made for.
+    // Past that, the honest cell is the no-data glyph.
+    const name = named
+      ? padEnd(named, nameW)
+      : dim(padEnd(i < scan.namesAsked ? '(anon)' : '—', nameW), style);
+
+    lines.push(
+      padEnd(shortAddress(r.address), 14) +
+        name +
+        // Coloured on the win count, which is the one ramp this tool has and
+        // the closest thing here to the dispute rounds it usually carries.
+        paintRounds(r.wins > 2 ? 2 : r.wins - 1, padStart(String(r.wins), 5), style) +
+        dim(padStart(String(scan.marketsScored), 5), style) +
+        padStart(count(r.tokens), 9) +
+        padStart(signed(r.gain), 9),
+    );
+  });
+
+  lines.push(rule(style));
+  lines.push(
+    dim(
+      `${scan.regulars.length} of ${scan.wallets} winning wallets took more than one, `
+        + `across ${scan.marketsScored} markets scored.`,
+      style,
+    ),
+  );
+
+  // Everything the tally did not cover, counted rather than implied. A market
+  // the subgraph refused is not a market nobody won.
+  const gaps: string[] = [];
+  if (scan.marketsFailed > 0) gaps.push(`${scan.marketsFailed} could not be read`);
+  if (scan.undecided > 0) gaps.push(`${scan.undecided} not settled yet`);
+  if (scan.empty > 0) gaps.push(`${scan.empty} had no position above the floor and are not scored`);
+  if (gaps.length > 0) lines.push(dim(`${gaps.join(', ')}.`, style));
+
+  // The gap that used to be invisible. These markets were not quiet, they were
+  // never reached, and the store reports both the same way.
+  if (scan.beyondIndex > 0) {
+    lines.push(
+      dim(
+        `${scan.beyondIndex} closed after the trade index stops`
+          + `${scan.indexHead ? ` at ${scan.indexHead.slice(0, 10)}` : ''}`
+          + ' and were not read at all. this table cannot see recent markets.',
+        style,
+      ),
+    );
+  }
+
+  if (scan.floorHigh > 0) {
+    // The floor is per market, because the store makes us raise it whenever it
+    // times out. Reporting the largest as though it applied everywhere would
+    // overstate what was left out of the markets that answered cheaply.
+    lines.push(
+      dim(
+        scan.floorRaised > 0
+          ? `positions under ${scan.floorLow} tokens were never requested, and ${scan.floorRaised} markets `
+            + `needed a higher floor, up to ${scan.floorHigh}.`
+          : `positions under ${scan.floorLow} tokens were never requested, so small wins are absent.`,
+        style,
+      ),
+    );
+  }
+  if (scan.regulars.length > scan.namesAsked) {
+    lines.push(
+      dim(`names were looked up for the top ${scan.namesAsked} rows only. below that the column is unread.`, style),
+    );
+  }
+  if (scan.namesFailed > 0) {
+    lines.push(dim(`${scan.namesFailed} names could not be looked up and show as addresses.`, style));
+  }
+  lines.push(
+    dim('from trades, not balances. these wallets redeemed and hold nothing now.', style),
+  );
+  // The restraint that has to be on screen, not only in the docs.
+  lines.push(
+    dim('someone wins every market. repeatedly is a question, not a finding.', style),
+  );
+
+  return lines.join('\n');
+}
+
+/**
  * The side redemption erases.
  *
  * Reported in tokens and in what was paid for them, because the interesting
@@ -293,17 +439,33 @@ export function renderWinners(a: Assessment, winners: Winner[], style: Style): s
   const wc = a.winnerConcentration;
 
   lines.push(bold(clip(a.market.question, style.width), style));
+  // Which side won comes from the market's own prices, not from the trade
+  // reading. Taking it off `winnerConcentration` printed "? side won" on every
+  // market past the trade index, where the outcome is not in doubt at all and
+  // only the wallets behind it are unread.
+  const side = wc?.side ?? winningSide(a.market);
   lines.push(
     dim(
-      `${wc?.side ?? '?'} side won after ${a.dispute.rounds} dispute round(s) · ${money(a.pool)} traded`,
+      `${side ?? '?'} side won after ${a.dispute.rounds} dispute round(s) · ${money(a.pool)} traded`,
       style,
     ),
   );
   lines.push(rule(style));
 
   if (winners.length === 0) {
-    lines.push(dim('no winning positions were returned for this market.', style));
-    for (const c of a.caveats) lines.push(dim(`  · ${c}`, style));
+    // Read off a field rather than inferred from the caveat text. A renderer
+    // grepping prose for the reason is a display decision made the authority on
+    // an evidence question, which this file has done once before and stopped.
+    lines.push(
+      dim(
+        a.tradeIndexEndsAt
+          ? `the winning side was not read. the trade index stops at ${a.tradeIndexEndsAt.slice(0, 10)} `
+            + 'and this market closed after that.'
+          : 'no winning positions were returned for this market.',
+        style,
+      ),
+    );
+    for (const c of a.caveats) lines.push(dim(`  · ${clip(c, style.width - 4)}`, style));
     return lines.join('\n');
   }
 
