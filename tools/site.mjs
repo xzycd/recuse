@@ -21,7 +21,7 @@
  * signalling this was made by someone who reads the data.
  */
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,6 +30,7 @@ import { chainNote } from '../dist/sources/chain.js';
 import { formatSteps } from '../dist/core/dispute.js';
 import { fetchContestedMarkets } from '../dist/sources/gamma.js';
 import { winnerMoney } from '../dist/core/capture.js';
+import { displayName } from '../dist/ui/format.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'site');
@@ -37,6 +38,19 @@ const OUT = join(ROOT, 'site');
 const SCAN = Number(process.env.SITE_SCAN ?? 600);
 const PAGES = Number(process.env.SITE_PAGES ?? 60);
 const ORIGIN = process.env.SITE_ORIGIN ?? 'https://xzycd.github.io/recuse';
+
+/**
+ * The one install line, in one place.
+ *
+ * These pages told every visitor to run `npx recuse`, which resolves to nothing:
+ * the name is not on the registry, so it is a 404 for anyone who tries it. The
+ * README had already been corrected for exactly this and says so in the file,
+ * and the site kept the claim for another release because it was written out
+ * four separate times in a generator nobody reread. `npm run check` now fails
+ * on either form of the unpublished name, so the next person to reach for it
+ * gets told rather than shipping it to the public surface.
+ */
+const INSTALL = 'npm i -g github:xzycd/recuse';
 
 /**
  * Escape for HTML.
@@ -170,7 +184,7 @@ function footer(generatedAt) {
   return `<footer>
 <p>${esc(chainNote())}</p>
 <p>Read from public Polymarket endpoints. No accusation is made or implied: someone is on the losing side of every market, and being there is not evidence of anything on its own.</p>
-<p>Generated ${esc(generatedAt)} · <a href="https://github.com/xzycd/recuse">source</a> · <code>npx recuse</code></p>
+<p>Generated ${esc(generatedAt)} · <a href="https://github.com/xzycd/recuse">source</a> · <code>${esc(INSTALL)}</code></p>
 </footer>`;
 }
 
@@ -222,10 +236,12 @@ ${rows}
 <p>These pages rebuild that side from trades.</p>
 
 <h2>in a terminal</h2>
-<pre>npx recuse                    contested markets, most contested first
-npx recuse queue              resolutions that have not finished
-npx recuse market &lt;slug&gt;      one market, both sides of it
-npx recuse winners &lt;slug&gt;     who bought the side that won</pre>
+<pre>${esc(INSTALL)}
+
+recuse                        contested markets, most contested first
+recuse queue                  resolutions that have not finished
+recuse market &lt;slug&gt;          one market, both sides of it
+recuse winners &lt;slug&gt;         who bought the side that won</pre>
 
 ${footer(meta.generatedAt)}`;
 
@@ -257,8 +273,13 @@ ${m ? `<div style="margin-top:6px">they paid <strong>${esc(money(m.paid))}</stro
 
   const winnerRows = (a.winners ?? []).slice(0, 20).map((w) => {
     const avg = w.net > 0 ? (w.netSpent / w.net).toFixed(2) : '—';
+    // The full address is the anchor here, since a web page has the room the
+    // terminal does not. The name still goes through the same filter, because
+    // data-api serves some of them as a truncated copy of that same address and
+    // printing it twice, once cut short, is not a name.
+    const named = displayName(w.name, w.address);
     return `<tr>
-<td>${esc(w.name ? `${w.name} ` : '')}<span class="dim">${esc(w.address)}</span></td>
+<td>${esc(named ? `${named} ` : '')}<span class="dim">${esc(w.address)}</span></td>
 <td class="n">${esc(count(w.bought))}</td>
 <td class="n">${esc(count(w.net))}</td>
 <td class="n">${esc(money(w.netSpent))}</td>
@@ -301,8 +322,8 @@ ${a.caveats.length ? `<h2>what this reading does not cover</h2>
 <ul class="caveats">${a.caveats.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
 
 <h2>check it yourself</h2>
-<pre>npx recuse market ${esc(a.market.slug || a.market.conditionId)}
-npx recuse winners ${esc(a.market.slug || a.market.conditionId)} --json</pre>
+<pre>recuse market ${esc(a.market.slug || a.market.conditionId)}
+recuse winners ${esc(a.market.slug || a.market.conditionId)} --json</pre>
 <p class="terms">${a.market.slug ? `<a href="https://polymarket.com/event/${esc(a.market.slug)}">This market on Polymarket</a>` : ''}</p>
 
 ${footer(generatedAt)}`;
@@ -366,8 +387,11 @@ async function main() {
 }
 
 // Only when invoked directly, so the helpers above stay importable and the
-// escaping can be tested. Same reason cli.ts guards its own entry point.
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop())) {
+// escaping can be tested. Same reason cli.ts guards its own entry point, and
+// the same comparison it had to stop making: matching basenames says yes to any
+// file that happens to share a name and no to a symlink that does not. This one
+// only ever worked because `npm run site` names the file it runs.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`${err?.message ?? err}\n`);
     process.exitCode = 1;
