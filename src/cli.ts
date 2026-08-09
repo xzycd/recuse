@@ -6,9 +6,10 @@
  * not the product, and anything you can read you can pipe.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { assess, assessAll, assessWallet, tallyRepeatPlayers } from './core/assess.js';
-import { checkForUpdate, updateNotice } from './core/update.js';
+import { checkForUpdate, updateNotice, INSTALL_COMMAND } from './core/update.js';
 import { checkWebhook } from './core/notify.js';
 import { chainNote } from './sources/chain.js';
 import { redactMessage } from './core/safe.js';
@@ -580,7 +581,7 @@ async function runUpdate(args: Args): Promise<number> {
   // the next time the name changes hands.
   emit(`recuse ${status.latest} is out, you have ${status.current}`);
   emit('');
-  emit(`  npm i -g recuse`);
+  emit(`  ${INSTALL_COMMAND}`);
   emit('');
   emit(
     style.colour
@@ -880,8 +881,40 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 }
 
-// Only run when invoked directly, so the module stays importable and testable.
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop() ?? '')) {
+/**
+ * Is this file the program, rather than a module someone imported?
+ *
+ * This compared basenames until it was tested through an installed binary. npm
+ * links `bin` as a symlink named `recuse`, node leaves `process.argv[1]` as the
+ * path to that symlink, and `import.meta.url` resolves to `dist/cli.js`, so
+ * "does the module url end with the basename of argv[1]" asked whether
+ * `cli.js` ends with `recuse`. It does not. Every command exited 0 and printed
+ * nothing, on the one install path the README documents.
+ *
+ * Nothing caught it because every check runs `node dist/cli.js`, where the two
+ * basenames match and the guard passes for the wrong reason. Resolving both
+ * sides to a real path is what the question was always asking, and it also
+ * survives a symlinked install directory and macOS putting `/tmp` behind
+ * `/private/tmp`.
+ *
+ * `realpath` is injected so this is testable without laying down real symlinks.
+ */
+export function isEntrypoint(
+  argv1: string | undefined,
+  moduleUrl: string,
+  realpath: (path: string) => string = realpathSync,
+): boolean {
+  if (!argv1) return false;
+  try {
+    return realpath(argv1) === realpath(fileURLToPath(moduleUrl));
+  } catch {
+    // An argv[1] that does not exist on disk is not this file. Node reports one
+    // for `node --eval`, and a missing path throws rather than answering.
+    return false;
+  }
+}
+
+if (isEntrypoint(process.argv[1], import.meta.url)) {
   main().then((code) => {
     process.exitCode = code;
   });

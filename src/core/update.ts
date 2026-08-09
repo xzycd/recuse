@@ -21,6 +21,21 @@ const REGISTRY = 'https://registry.npmjs.org/recuse/latest';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const TIMEOUT_MS = 2_000;
 
+/**
+ * The command a person is told to run, in one place because it was wrong in
+ * two.
+ *
+ * This printed `npm i -g recuse` for a name that is not on the registry, so the
+ * one instruction the update path exists to give was an instruction that 404s.
+ * It is the same claim the README was corrected for and the site kept printing,
+ * and it survived here longest because you only see it on the day a newer
+ * version exists, which for an unpublished package is no day at all.
+ *
+ * When the name is published this becomes `npm i -g recuse` and the rule in
+ * tools/housekeeping.mjs that forbids writing that goes away with it.
+ */
+export const INSTALL_COMMAND = 'npm i -g github:xzycd/recuse';
+
 export interface UpdateStatus {
   current: string;
   latest?: string;
@@ -155,5 +170,5 @@ export async function checkForUpdate(
 /** The line the radar prints when a newer version exists. */
 export function updateNotice(status: UpdateStatus): string | undefined {
   if (!status.behind || !status.latest) return undefined;
-  return `${status.current} installed, ${status.latest} published. npm i -g recuse`;
+  return `${status.current} installed, ${status.latest} published. ${INSTALL_COMMAND}`;
 }

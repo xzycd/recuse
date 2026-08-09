@@ -8,6 +8,26 @@ While this is `0.x`, both can change. From `1.0` the JSON shapes are the contrac
 
 Dates are the day the work landed, not the day it was published.
 
+## 0.6.1, 2026-08-09
+
+**The installed binary did nothing at all.** `npm i -g github:xzycd/recuse` linked the bin, printed no warning, and then every command exited 0 with empty stdout. The guard at the foot of `cli.ts` asked whether the module URL ended with the basename of `process.argv[1]`. npm links `bin` as a symlink named `recuse`, node leaves `argv[1]` pointing at that symlink, and `import.meta.url` resolves to `dist/cli.js`, so the question being asked was whether `cli.js` ends with `recuse`. It does not.
+
+Nothing caught it because every check here runs `node dist/cli.js`, where the two basenames match and the guard passes for the wrong reason. The last release was about an install that produced no binary. This one produced a binary that did nothing, which is the same sentence one layer down, and the lesson is the same both times: the install path has to be exercised the way a user gets it, not the way the repo runs it. Both sides now resolve to a real path, and the test lays down an actual symlink and spawns through it, because that is the only shape that ever failed.
+
+**Three surfaces told people to run a command that 404s.** `recuse` is not on the npm registry, so `npx recuse` and `npm i -g recuse` are instructions that fail for anyone who copies them. The README was corrected for exactly this in 0.6.0 and says so in the file. The site generator kept printing `npx recuse` on every page it wrote, four separate times, and `recuse update` printed `npm i -g recuse` as the thing to run next. Prose gets reread and a generator does not, and the update notice is only visible on a day a newer version exists, which for an unpublished package is no day at all.
+
+The install line lives in one constant now. `npm run check` fails on either form of the unpublished name, in a fenced block in the prose or in a non-comment line in a tool, and that rule is written to be deleted the day the name is published. It found the update notice on its first run, which is the whole argument for checking rather than remembering.
+
+**Two columns printed identifiers nobody could check.** `recuse players` cut the raw address to its first twelve characters, which is the failure the winners table already refuses: an address clipped to fit reads like an identifier and cannot be compared against anything. It abbreviates like everywhere else now.
+
+The name column beside it was worse, and it took live data to see. data-api serves an account's display name defaulted to its own address, and serves it already truncated, ellipsis included: 40 characters standing in for a 42 character address. So the name was neither equal to the address nor the length of one, every check for either missed it, and the widest column in the table filled up with fragments like `0x7Ee7B7fe80641bE006601Fce0D43D0CD0A551…` sitting next to the anchor they were a copy of. A display name that is a prefix of the row's own address is now dropped, because the account did not choose a name. One that is some other address is kept and shortened, since an account calling itself by an address that is not its own is worth seeing and is only worth seeing if it can be read.
+
+**`recuse winners` showed two of its caveats and dropped the rest.** The filter kept the two beginning "winning side" and "more winning" and silently discarded the holder truncation, the count of names that could not be looked up, and the note that no oracle data was read. The comment directly above it already said every caveat and not a chosen subset, which was the version that was right: the caveats are assembled as data precisely so that no surface can quietly pick among them. On the Zelenskyy market this is the difference between a `100%` share carrying two caveats and carrying four.
+
+**The log's dispute column read as a duration.** `recuse ledger` rendered rounds as `3d` where every other table in the tool renders `3×`, directly under a header measuring the log in days, and next to an unlabelled event count. Both columns have headings now and the glyph matches the rest of the tool.
+
+Also: the site links from the repo, which it did not; `signed` carried a replace of `$` with `$`; and `tools/site.mjs` had a copy of the same entry point guard, which only ever worked because `npm run site` names the file it runs.
+
 ## 0.6.0, 2026-08-08
 
 **Installing it from git produced nothing runnable, and said it had worked.** `npm i github:xzycd/recuse` reported "added 41 packages", installed three files, linked no binary and printed no warning. `dist/` is gitignored so a clone carries no build, and `prepublishOnly` is not a script npm runs on a git install, so nothing ever compiled. It builds through `prepare` now, which is the lifecycle script that does run on that path, and the installed `recuse` was checked end to end from a clean clone. This has the same shape as the bug the last release was about: a confident success message over nothing.

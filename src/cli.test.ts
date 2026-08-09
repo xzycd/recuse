@@ -1,5 +1,10 @@
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { parseArgs, version } from './cli.js';
+import { isEntrypoint, parseArgs, version } from './cli.js';
 
 describe('parseArgs', () => {
   it('defaults to the radar', () => {
@@ -120,5 +125,61 @@ describe('version', () => {
     // The update check compares against this. A hardcoded string here would
     // eventually tell someone they are current when they are not.
     expect(version()).toMatch(/^[0-9]+\.[0-9]+\.[0-9]+/);
+  });
+});
+
+describe('isEntrypoint', () => {
+  // The whole point of these: the previous guard compared basenames, so an
+  // installed `recuse` symlink pointing at `cli.js` failed it and the program
+  // silently did nothing. Every one of these passed under the old guard except
+  // the symlink case, which is the one that shipped.
+  const real = '/pkg/dist/cli.js';
+  const url = 'file:///pkg/dist/cli.js';
+  const resolve = (path: string) => (path === '/usr/local/bin/recuse' ? real : path);
+
+  it('runs when npm links the bin under a different name', () => {
+    expect(isEntrypoint('/usr/local/bin/recuse', url, resolve)).toBe(true);
+  });
+
+  it('runs when node is handed the file directly', () => {
+    expect(isEntrypoint(real, url, resolve)).toBe(true);
+  });
+
+  it('stays quiet when something else is the program', () => {
+    expect(isEntrypoint('/pkg/node_modules/vitest/vitest.mjs', url, resolve)).toBe(false);
+  });
+
+  it('stays quiet when there is no argv[1] at all', () => {
+    expect(isEntrypoint(undefined, url, resolve)).toBe(false);
+  });
+
+  it('treats an argv[1] that is not on disk as not this file', () => {
+    // `node --eval` reports one. Throwing here would crash on import.
+    const missing = () => {
+      throw new Error('ENOENT');
+    };
+    expect(isEntrypoint('[eval]', url, missing)).toBe(false);
+  });
+});
+
+describe('the built binary', () => {
+  // The unit tests above cover the logic. This covers the thing that actually
+  // broke: a real symlink, a real spawn, and stdout that has to contain
+  // something. It needs dist/, which CI builds before it tests.
+  const entry = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+
+  it.skipIf(!existsSync(entry))('prints usage when run through a bin symlink', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'recuse-bin-'));
+    try {
+      const link = join(dir, 'recuse');
+      symlinkSync(entry, link);
+      const out = execFileSync(process.execPath, [link, '--help'], {
+        encoding: 'utf8',
+        env: { ...process.env, RECUSE_NO_UPDATE_CHECK: '1' },
+      });
+      expect(out).toContain('usage');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

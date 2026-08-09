@@ -53,7 +53,7 @@ tools/
 ## Commands
 
 ```sh
-npm test          # 305 tests, no network, sub-second
+npm test          # 319 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
 npm run check     # the house rules below, enforced
@@ -192,3 +192,6 @@ A running log. One line each, added when something cost real time to find out an
 - A reference count cannot find dead code that references itself. Eight exports calling each other, three with tests, all unreachable. Walk from the entry point instead.
 - Parsing strings out of source before analysing it is a trap. Dropping string bodies turned `${BASE}/markets?${params}` into one token and reported `BASE` as dead in two modules, and a `'` inside a regex character class swallowed the line after it. Strip comments only, and accept missing the dead symbol whose name appears in a string.
 - An empty array in a JSON payload is a claim. `"actors": []` says the oracle was read and nobody was there. Absent says nothing, which was the truth.
+- The entry point guard compared basenames, so the installed `recuse` symlink failed it and every command printed nothing and exited 0. `node dist/cli.js` passes it for the wrong reason, which is why nothing here caught it. Run the binary the way a user gets it.
+- data-api serves a display name defaulted to the account's own address, and serves it pre-truncated with an ellipsis at 40 characters. It is neither equal to the address nor the length of one, so both obvious checks miss it.
+- A claim in a generator outlives the same claim in prose. The README stopped saying `npx recuse` a release before the site did, because prose gets reread and a template does not. Check the generated surface, not the document about it.

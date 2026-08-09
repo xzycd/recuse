@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isNewer, updateNotice } from './update.js';
+import { INSTALL_COMMAND, isNewer, updateNotice } from './update.js';
 
 describe('isNewer', () => {
   it('compares each position numerically, not as text', () => {
@@ -39,6 +39,10 @@ describe('updateNotice', () => {
     const notice = updateNotice({ current: '0.1.0', latest: '0.2.0', behind: true })!;
     expect(notice).toContain('0.1.0');
     expect(notice).toContain('0.2.0');
-    expect(notice).toContain('npm i -g recuse');
+    // The command has to be one someone can actually run. This asserted the
+    // registry name while the package was not on the registry, so the test
+    // agreed with the code and both were wrong.
+    expect(notice).toContain(INSTALL_COMMAND);
+    expect(INSTALL_COMMAND).toMatch(/^npm i -g github:/);
   });
 });
