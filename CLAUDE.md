@@ -10,7 +10,8 @@ src/
     http.ts       fetch with timeout, backoff, a body size cap, embedded JSON
     gamma.ts      market catalogue and resolution lifecycles
     dataapi.ts    current balances, with the display names accounts chose
-    subgraph.ts   cumulative trades, which is how the winning side is recovered
+    subgraph.ts   cumulative trades, which is how the winning side is recovered,
+                  and the index head, which is how far back that recovery works
     chain.ts      the oracle layer, unbuilt. reports that it read nothing,
                   and validates RECUSE_RPC_URL on every reading
   core/       pure logic, no I/O except where noted
@@ -53,13 +54,14 @@ tools/
 ## Commands
 
 ```sh
-npm test          # 319 tests, no network, sub-second
+npm test          # 335 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
 npm run check     # the house rules below, enforced
 npm run site      # regenerate site/ from live data, needs a build first
 node tools/logo.mjs   # regenerate assets/banner.svg and assets/mark.svg
 recuse serve --mcp    # answer over MCP on stdin and stdout
+recuse regulars       # wallets that won more than one contested market
 ```
 
 CI runs `build`, `test` and `check` on Node 20 and 22 for every push and pull request. The site rebuilds nightly and publishes to Pages, and refuses to publish a snapshot with fewer than five pages, because a scan that returned nothing is a failed scan rather than an empty day.
@@ -195,3 +197,6 @@ A running log. One line each, added when something cost real time to find out an
 - The entry point guard compared basenames, so the installed `recuse` symlink failed it and every command printed nothing and exited 0. `node dist/cli.js` passes it for the wrong reason, which is why nothing here caught it. Run the binary the way a user gets it.
 - data-api serves a display name defaulted to the account's own address, and serves it pre-truncated with an ellipsis at 40 characters. It is neither equal to the address nor the length of one, so both obvious checks miss it.
 - A claim in a generator outlives the same claim in prose. The README stopped saying `npx recuse` a release before the site did, because prose gets reread and a template does not. Check the generated surface, not the document about it.
+- The orderbook subgraph is roughly seven months behind the chain, and it answers a market it never indexed with `[]` and HTTP 200, identically to a market nobody traded. Two thirds of contested markets were being reported as markets nobody won. Read the head with `fetchIndexHead` and compare it to the market's close before believing an empty position list. A source with no errors to report is not a source that covered the ground.
+- `enrichedOrderFilleds`, `redemptions` and `marketProfits` all exist in that subgraph and all time out with any `where` clause on market or condition, floors included. Unfiltered and sorted on an indexed column is the one shape that answers, which is exactly enough to read the index head and nothing more. Timestamped trades are off the table for the same reason price history was.
+- `umaResolutionStatuses` is bare strings with no per-step outcome, so what was proposed in each round, and whether a dispute changed the answer, is not recoverable from Gamma.

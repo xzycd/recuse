@@ -40,6 +40,7 @@ recuse market <id-or-slug>      # one market, both sides of it
 recuse winners <id-or-slug>     # who bought the side that won, and for how much
 recuse wallet <address>         # one wallet's record, disputed markets first
 recuse players                  # addresses that keep ending up on the losing side
+recuse regulars                 # addresses that keep ending up on the winning side
 recuse ledger                   # what your event log has accumulated
 recuse update                   # check for a newer version
 recuse serve --mcp              # answer over MCP, for an agent rather than a person
@@ -206,10 +207,10 @@ recuse serve --mcp
 ```
 
 One JSON-RPC message per line on stdin and stdout, which is all MCP over stdio
-is, so this needs no SDK and adds no dependency. Five tools:
-`contested_markets`, `market_record`, `winning_side`, `wallet_record` and
-`resolution_queue`. They call the same engine the commands do, so a tool result
-and a table cannot drift apart.
+is, so this needs no SDK and adds no dependency. Six tools:
+`contested_markets`, `market_record`, `winning_side`, `repeat_winners`,
+`wallet_record` and `resolution_queue`. They call the same engine the commands
+do, so a tool result and a table cannot drift apart.
 
 ```json
 {
@@ -239,6 +240,10 @@ So the guardrails travel as data rather than as prose:
 - what was not covered is a field, not a footnote. `contested_markets` states
   how many scanned markets are missing from its own list, and `winning_side`
   reports the token floor the subgraph needed before it would answer
+- an empty list says which kind of empty it is. `winning_side` sets
+  `winningSideRead: false` when the market closed after the trade index stops,
+  because otherwise `"winners": []` reads as a market nobody won, and
+  `repeat_winners` counts those markets apart from the ones it actually read
 - a lookup that could not be verified comes back as `found: false` rather than
   as the first row of whatever Gamma returned instead
 
@@ -292,6 +297,50 @@ Those names are the reason this is worth doing. These wallets redeemed and left 
 A name never appears without its address. Display names are chosen by the account holder, nothing stops one calling itself another account's address, and every finding here is anchored to an address. The full form is always in `--json`.
 
 Frequently unexciting, which is the point. Plenty of these wallets bought at 0.98 and made two cents. A tool that only ever surfaced scandals would be manufacturing them.
+
+## Who keeps winning the contested ones
+
+`recuse winners` answers that for one market. `recuse regulars` asks it across all of them at once, which is a question no balance-based tool can ask at all: every wallet in the answer redeemed and holds nothing now.
+
+```sh
+recuse regulars
+```
+
+```
+ADDRESS       NAME                          WON   OF   TOKENS      NET
+0xc8ab…6418   ArmageddonRewardsBilly         11   20     2.9M    +$33K
+0x24c8…23e1   debased                         9   20    10.2M   +$294K
+0xed10…d2e5   elmcap2                         8   20    12.8M    +$88K
+0x889e…09e0   BowlOfPunch                     7   20     9.3M   +$409K
+
+117 of 494 winning wallets took more than one, across 20 markets scored.
+18 closed after the trade index stops at 2026-01-05 and were not read at all.
+positions under 1000 tokens were never requested, so small wins are absent.
+someone wins every market. repeatedly is a question, not a finding.
+```
+
+Every row carries the number of markets scored, because "won 11" means nothing without how many were on the table. The distribution is the interesting part: on a 600 market scan, most wallets that won a contested market won exactly one, and the tail thins fast. That is what makes the top of the list worth a second look, and it is also why the last line of the footer is there. Someone wins every market. This is a tally, not an allegation, and nothing in this tool reads who proposed or disputed a resolution.
+
+One subgraph query per market, so it is slower than everything else here and reads fewer markets by default. `--limit` sets how many contested markets to rebuild.
+
+## What this cannot see yet
+
+The winning side is rebuilt from a public trade index that is currently about seven months behind the chain. Its last indexed trade is 2026-01-05, and in a 600 market scan, 25 of 38 contested markets closed after that.
+
+This matters more than it sounds, because the store answers a market it never reached with an empty list and HTTP 200, exactly as it answers a market nobody traded. So the honest reading and the wrong one look identical from the outside:
+
+```
+$ recuse winners microstrategy-sells-any-bitcoin-by-may-31-2026
+
+NO side won after 2 dispute round(s) · $375.8M traded
+
+the winning side was not read. the trade index stops at 2026-01-05
+and this market closed after that.
+```
+
+Not "nobody won a $375M market". `--json` carries `tradeIndexEndsAt` next to the empty `winners` array for the same reason, and the MCP payload sets `winningSideRead: false`. An empty array is a claim, and it is not one this build is entitled to make about a recent market.
+
+The losing side, the dispute lifecycle, the queue and the watcher all read from Gamma and are current. It is only the trade-rebuilt half that stops in January.
 
 ## Following one wallet
 
