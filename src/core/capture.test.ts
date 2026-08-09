@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  caveatsFor, concentration, leadingSide, observableSide, repeatPlayers, tradeConcentration,
-  winningSide,
+  caveatsFor, concentration, leadingSide, observableSide, repeatPlayers, repeatWinners,
+  tradeConcentration, winningSide,
 } from './capture.js';
-import type { Holder, Market, Side } from '../types.js';
+import type { Holder, Market, Side, Winner } from '../types.js';
+
+function winner(address: string, net: number, netSpent: number, name?: string): Winner {
+  return { address, name, bought: net, net, spent: netSpent, netSpent };
+}
 
 function holder(address: string, side: Side, size: number, name?: string): Holder {
   return { address, side, size, value: size, name };
@@ -93,6 +97,106 @@ describe('concentration', () => {
 
   it('returns undefined rather than zero when a side is empty', () => {
     expect(concentration([], 'YES', 'wiped')).toBeUndefined();
+  });
+});
+
+describe('caveatsFor, on a reading the trade index never reached', () => {
+  it('says the winning side was not read rather than found empty', () => {
+    const out = caveatsFor({
+      holderCount: 5,
+      holdersTruncated: false,
+      settled: true,
+      beyondIndex: '2026-01-05T22:05:45.000Z',
+    });
+    expect(out[0]).toContain('trade index stops at 2026-01-05');
+    expect(out[0]).toContain('not read rather than found empty');
+  });
+
+  it('leads the winner caveats, because it says that reading never happened', () => {
+    const out = caveatsFor({
+      holderCount: 5,
+      holdersTruncated: false,
+      settled: true,
+      beyondIndex: '2026-01-05T22:05:45.000Z',
+      winnerFloor: 1000,
+    });
+    // A floor describes what a reading left out. This one says there was no
+    // reading, so it has to come first of the two or it gets read as a detail.
+    expect(out.findIndex((c) => c.includes('trade index'))).toBeLessThan(
+      out.findIndex((c) => c.includes('omits positions under')),
+    );
+  });
+
+  it('says nothing when the reading is inside the index', () => {
+    const out = caveatsFor({ holderCount: 5, holdersTruncated: false, settled: true });
+    expect(out.join(' ')).not.toContain('trade index');
+  });
+});
+
+describe('repeatWinners', () => {
+  it('counts wins across markets and sums the arithmetic', () => {
+    const regulars = repeatWinners([
+      { market: 'a', winners: [winner('0xa', 100, 90), winner('0xb', 50, 40)] },
+      { market: 'b', winners: [winner('0xa', 200, 150)] },
+    ]);
+    // 300 tokens redeeming at a dollar against 240 paid.
+    expect(regulars).toEqual([
+      { address: '0xa', name: undefined, wins: 2, tokens: 300, paid: 240, gain: 60, markets: ['a', 'b'] },
+    ]);
+  });
+
+  it('drops a wallet that sold out before resolution', () => {
+    // Bought the winning side and left. It was never paid, and counting it
+    // would make this a table of people who touched the right token.
+    const flipped: Winner = { address: '0xa', bought: 500, net: 0, spent: 400, netSpent: 0 };
+    const regulars = repeatWinners(
+      [{ market: 'a', winners: [flipped] }, { market: 'b', winners: [flipped] }],
+      1,
+    );
+    expect(regulars).toEqual([]);
+  });
+
+  it('drops addresses below the win floor', () => {
+    // Winning one contested market is what happens to most of this data.
+    expect(repeatWinners([{ market: 'a', winners: [winner('0xa', 10, 5)] }])).toEqual([]);
+  });
+
+  it('counts an address once per market', () => {
+    const regulars = repeatWinners(
+      [{ market: 'a', winners: [winner('0xa', 10, 5), winner('0xa', 99, 1)] }],
+      1,
+    );
+    expect(regulars[0]).toMatchObject({ wins: 1, tokens: 10, markets: ['a'] });
+  });
+
+  it('ranks by wins first and money second', () => {
+    // A wallet that won more markets outranks one that made more on fewer,
+    // because the count is the finding and the money is the context.
+    const regulars = repeatWinners([
+      { market: 'a', winners: [winner('0xsmall', 10, 1), winner('0xrich', 1_000_000, 1)] },
+      { market: 'b', winners: [winner('0xsmall', 10, 1), winner('0xrich', 1_000_000, 1)] },
+      { market: 'c', winners: [winner('0xsmall', 10, 1)] },
+    ]);
+    expect(regulars.map((r) => r.address)).toEqual(['0xsmall', '0xrich']);
+    expect(regulars[0]?.wins).toBe(3);
+  });
+
+  it('keeps a name if any market supplied one', () => {
+    const regulars = repeatWinners([
+      { market: 'a', winners: [winner('0xa', 10, 1)] },
+      { market: 'b', winners: [winner('0xa', 10, 1, 'debased')] },
+    ]);
+    expect(regulars[0]?.name).toBe('debased');
+  });
+
+  it('reports a loss honestly when a winner overpaid', () => {
+    // Buying the winning side above a dollar is possible and does happen.
+    // Nothing here clamps it to zero.
+    const regulars = repeatWinners(
+      [{ market: 'a', winners: [winner('0xa', 100, 130)] }],
+      1,
+    );
+    expect(regulars[0]).toMatchObject({ gain: -30 });
   });
 });
 

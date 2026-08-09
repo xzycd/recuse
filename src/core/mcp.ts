@@ -34,6 +34,7 @@
 import type { Assessment, Concentration } from '../types.js';
 import type { WalletLedger } from './wallet.js';
 import type { QueueScan } from './queue.js';
+import type { RegularScan } from './assess.js';
 import { waited } from './queue.js';
 
 /**
@@ -88,6 +89,7 @@ export interface Engine {
   winners(idOrSlug: string, limit: number): Promise<Assessment | undefined>;
   wallet(address: string, limit: number): Promise<WalletLedger>;
   pending(scan: number): Promise<QueueScan>;
+  regulars(scan: number, markets: number): Promise<RegularScan>;
 }
 
 /**
@@ -248,15 +250,97 @@ export function recuseTools(engine: Engine): McpTool[] {
           question: a.market.question,
           concentration: share(conc),
           winners: (a.winners ?? []).map(winnerRow),
+          // Absent unless the reading ran past the index. Present, it means the
+          // empty winners array above says nothing about who held this side.
+          ...(a.tradeIndexEndsAt
+            ? { winningSideRead: false, tradeIndexEndsAt: a.tradeIndexEndsAt }
+            : { winningSideRead: true }),
           evidence: a.tier,
           caveats: a.caveats,
           limits: [
             ...ALWAYS,
+            ...(a.tradeIndexEndsAt
+              ? [`the trade index stops at ${a.tradeIndexEndsAt.slice(0, 10)} and this market closed after that, so an empty winners list here means not read and never means nobody won`]
+              : []),
             'these are cumulative buys, not balances. a balance is a position now and a winner\'s is zero',
             ...(conc?.floor
               ? [`positions below ${conc.floor} tokens were never requested, because the subgraph will not sort by size without a floor`]
               : []),
             'buying the winning side is what a correct prediction looks like. it is not on its own evidence of anything else',
+          ],
+        };
+      },
+    },
+    {
+      name: 'repeat_winners',
+      description:
+        'Addresses that ended up on the winning side of more than one contested Polymarket market, '
+        + 'rebuilt from cumulative trades. This is the half of the book no balance-based tracker can see: '
+        + 'winners redeem at settlement and their balances go to zero, so they vanish from holder data '
+        + 'entirely. Use it to find wallets worth reading with wallet_record. Every row carries the number '
+        + 'of markets scored as its denominator, and markets that could not be read are reported '
+        + 'separately from markets where nobody qualified. Someone wins every market, so a high count is a '
+        + 'question and not a finding, and it is never evidence about how a resolution was decided. Repeat '
+        + 'the caveats and limits fields in any answer built on this.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scan: { type: 'integer', description: 'How many markets to examine. Default 400.' },
+          markets: {
+            type: 'integer',
+            description: 'How many contested markets to rebuild. Default 25, maximum 60. One query each.',
+          },
+          limit: { type: 'integer', description: 'How many wallets to return. Default 20, maximum 50.' },
+        },
+      },
+      async run(args) {
+        const scan = clamp(args.scan, 400, 1, 1000);
+        const markets = clamp(args.markets, 25, 1, 60);
+        const limit = clamp(args.limit, 20, 1, 50);
+        const s = await engine.regulars(scan, markets);
+
+        return {
+          marketsScored: s.marketsScored,
+          showing: Math.min(limit, s.regulars.length),
+          repeatWinners: s.regulars.slice(0, limit).map((r) => ({
+            address: r.address,
+            name: r.name,
+            // One unsplittable string, same reason as `share` above: a summary
+            // keeps the number it can lift out and drops the denominator that
+            // made it checkable.
+            reading: `won ${r.wins} of ${s.marketsScored} contested markets scored`,
+            wins: r.wins,
+            marketsScored: s.marketsScored,
+            tokensHeldAtSettlement: r.tokens,
+            usdPaid: r.paid,
+            usdNet: r.gain,
+            markets: r.markets,
+          })),
+          evidence: 'positions+trades',
+          caveats: [
+            ...(s.marketsFailed > 0
+              ? [`${s.marketsFailed} contested markets could not be read and are in no wallet's count`]
+              : []),
+            ...(s.empty > 0
+              ? [`${s.empty} markets returned no position above the floor and are not in the denominator`]
+              : []),
+            ...(s.beyondIndex > 0
+              ? [`${s.beyondIndex} contested markets closed after the trade index stops${s.indexHead ? ` at ${s.indexHead.slice(0, 10)}` : ''} and were not read at all, so this covers older markets and not recent ones`]
+              : []),
+            ...(s.undecided > 0 ? [`${s.undecided} contested markets have not settled and were skipped`] : []),
+            ...(s.floorHigh > 0
+              ? [`positions under ${s.floorLow} tokens were never requested${s.floorRaised > 0 ? `, and ${s.floorRaised} markets needed a floor up to ${s.floorHigh}` : ''}`]
+              : []),
+            ...(s.regulars.length > s.namesAsked
+              ? [`names were looked up for the top ${s.namesAsked} rows only, so an absent name below that means unread rather than unnamed`]
+              : []),
+          ],
+          limits: [
+            ...ALWAYS,
+            `${s.wallets} distinct wallets won at least one of these markets and ${s.regulars.length} won more than one`,
+            'counts are over the markets scored here, not over every market a wallet has ever traded. a wallet may have lost many others',
+            'a wallet that bought the winning side and sold before resolution is not counted, because it was never paid',
+            'these are cumulative buys, never balances, and the two are never summed',
           ],
         };
       },

@@ -83,6 +83,25 @@ const engine: Engine = {
   async pending() {
     return { pending: [], scanned: 300, noLifecycle: 191, finished: 83, undated: 0 };
   },
+  async regulars() {
+    return {
+      regulars: [
+        {
+          address: '0xc8ab', name: 'ArmageddonRewardsBilly', wins: 11,
+          tokens: 2_900_000, paid: 2_867_000, gain: 33_000,
+          markets: ['will-x-happen', 'will-y-happen'],
+        },
+        {
+          address: '0x24c8', wins: 9, tokens: 10_200_000, paid: 9_906_000, gain: 294_000,
+          markets: ['will-x-happen'],
+        },
+      ],
+      marketsRead: 38, marketsScored: 20, marketsFailed: 2, undecided: 4, empty: 18,
+      beyondIndex: 25, indexHead: '2026-01-05T22:05:45.000Z',
+      floorLow: 1_000, floorHigh: 100_000, floorRaised: 6,
+      wallets: 494, namesAsked: 1, namesFailed: 0,
+    };
+  },
 };
 
 const tools = recuseTools(engine);
@@ -132,7 +151,8 @@ describe('the wire format', () => {
     const res = await dispatch({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, tools, INFO);
     const listed = (res?.result as { tools: Array<{ name: string; inputSchema: unknown }> }).tools;
     expect(listed.map((t) => t.name)).toEqual([
-      'contested_markets', 'market_record', 'winning_side', 'wallet_record', 'resolution_queue',
+      'contested_markets', 'market_record', 'winning_side', 'repeat_winners', 'wallet_record',
+      'resolution_queue',
     ]);
     for (const t of listed) expect(t.inputSchema).toBeTruthy();
   });
@@ -222,7 +242,7 @@ describe('what the payload refuses to leave out', () => {
   });
 
   it('carries the limits on every tool, not just the alarming ones', async () => {
-    for (const name of ['contested_markets', 'market_record', 'winning_side', 'wallet_record', 'resolution_queue']) {
+    for (const name of ['contested_markets', 'market_record', 'winning_side', 'repeat_winners', 'wallet_record', 'resolution_queue']) {
       const args = name === 'wallet_record' ? { address: '0x1' }
         : name.includes('market_record') || name === 'winning_side' ? { market: '0xabc' } : {};
       const { payload } = await call(name, args);
@@ -242,6 +262,53 @@ describe('what the payload refuses to leave out', () => {
     const { payload } = await call('winning_side', { market: '0xabc' });
     expect(payload.concentration.positionsBelowTokensNotRequested).toBe(1000);
     expect(payload.limits.join(' ')).toContain('below 1000 tokens were never requested');
+  });
+
+  it('never states a win count without the markets it is out of', async () => {
+    const { payload } = await call('repeat_winners');
+    // `won 11` is the number a summary keeps. The denominator has to be
+    // attached to it, not sitting in a sibling field it can drop.
+    expect(payload.repeatWinners[0].reading).toBe('won 11 of 20 contested markets scored');
+    expect(payload.repeatWinners[0].marketsScored).toBe(20);
+    expect(payload.marketsScored).toBe(20);
+  });
+
+  it('separates markets it could not read from markets nobody won', async () => {
+    const { payload } = await call('repeat_winners');
+    const caveats = payload.caveats.join(' ');
+    // The distinction the whole project turns on. Folding these into the
+    // denominator would put a confident number over ground never covered.
+    expect(caveats).toContain('2 contested markets could not be read');
+    expect(caveats).toContain('18 markets returned no position above the floor');
+    expect(caveats).toContain('4 contested markets have not settled');
+  });
+
+  it('reports the floor range, not just the highest one it hit', async () => {
+    const { payload } = await call('repeat_winners');
+    expect(payload.caveats.join(' ')).toContain('under 1000 tokens were never requested');
+    expect(payload.caveats.join(' ')).toContain('6 markets needed a floor up to 100000');
+  });
+
+  it('says which markets were never reached, not just which were empty', async () => {
+    const { payload } = await call('repeat_winners');
+    const caveats = payload.caveats.join(' ');
+    // The store answers a market past its indexing head with an empty list and
+    // HTTP 200, exactly as it answers a market nobody traded. Collapsing the
+    // two is how two thirds of the contested set read as markets nobody won.
+    expect(caveats).toContain('25 contested markets closed after the trade index stops at 2026-01-05');
+    expect(caveats).toContain('covers older markets and not recent ones');
+  });
+
+  it('says an unread name is unread rather than letting it read as unnamed', async () => {
+    const { payload } = await call('repeat_winners');
+    expect(payload.caveats.join(' ')).toContain('unread rather than unnamed');
+  });
+
+  it('refuses to let a win count imply anything about the resolution', async () => {
+    const { payload } = await call('repeat_winners');
+    const limits = payload.limits.join(' ');
+    expect(limits).toContain('not over every market a wallet has ever traded');
+    expect(limits).toContain('sold before resolution is not counted');
   });
 
   it('reports a miss as a miss rather than as the first row of something else', async () => {
