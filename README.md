@@ -323,24 +323,41 @@ Every row carries the number of markets scored, because "won 11" means nothing w
 
 One subgraph query per market, so it is slower than everything else here and reads fewer markets by default. `--limit` sets how many contested markets to rebuild.
 
-## What this cannot see yet
+## The index that stopped, and what answers instead
 
-The winning side is rebuilt from a public trade index that is currently about seven months behind the chain. Its last indexed trade is 2026-01-05, and in a 600 market scan, 25 of 38 contested markets closed after that.
+The winning side used to come from one place: a public trade index that is now about seven months behind the chain. Its last indexed trade is 2026-01-05, and in a 600 market scan, 25 of 38 contested markets closed after that.
 
-This matters more than it sounds, because the store answers a market it never reached with an empty list and HTTP 200, exactly as it answers a market nobody traded. So the honest reading and the wrong one look identical from the outside:
+That would have been survivable if the store said so. It does not. Asked about a market it never reached it answers an empty list with HTTP 200, byte for byte how it answers a market nobody traded, so the honest reading and the wrong one looked identical from outside. `recuse winners` printed "no winning positions were returned" over a $375M market with two dispute rounds.
+
+There is a second source for the same fact, and it is current: Polymarket's own trade log, one record per fill. Where the index reaches, `recuse` still uses it, because it counts back to the market's first trade with no floor and no ceiling. Where it does not, the log answers, and the reading says which one it stood on.
 
 ```
-$ recuse winners microstrategy-sells-any-bitcoin-by-may-31-2026
+$ recuse winners us-forces-enter-iran-by-april-30-899
 
-NO side won after 2 dispute round(s) · $375.8M traded
+YES side won after 2 dispute round(s) · $269.0M traded
 
-the winning side was not read. the trade index stops at 2026-01-05
-and this market closed after that.
+WHO                           SHARE   BOUGHT     HELD     PAID   AVG     GAIN
+NotBakerMcKenzie 0xd99f…fcdc    23%    18.6M    18.6M   $18.5M  1.00     $43K
+CAR-GangVersion 0x02e7…59e5     13%    10.7M    10.7M   $10.7M  1.00     $23K
+MoronKiler 0xbebe…a8b5           7%     7.1M     5.6M    $5.6M  1.00     $17K
+
+top 5 of 23 wallets returned hold 55% of 82.2M tokens
+  · the trade index stops at 2026-01-05 and this market closed after that,
+    so the winning side below was rebuilt from the trade log instead
+  · winning side is from the trade log and omits trades under $5000
 ```
 
-Not "nobody won a $375M market". `--json` carries `tradeIndexEndsAt` next to the empty `winners` array for the same reason, and the MCP payload sets `winningSideRead: false`. An empty array is a claim, and it is not one this build is entitled to make about a recent market.
+Two things about that log are worth knowing before trusting anything built on it, and both are stated in every reading rather than assumed away.
 
-The losing side, the dispute lifecycle, the queue and the watcher all read from Gamma and are current. It is only the trade-rebuilt half that stops in January.
+**It defaults to half the fills.** `takerOnly` is true unless you turn it off, so one market that returns 11,135 trades returns over 20,000 with it off, and the wallets in the first version were short by up to 40%. Nothing in the response says so.
+
+**It pages to 20,000 trades and no further.** Past that it refuses, and 28 of those 38 contested markets have more. The way through is a minimum trade size in dollars, which is the same bargain the index already demanded in tokens: read the market whole above a floor rather than read the most recent slice of it. The floor that worked comes back with the data and is printed under the table, because it changes what the number means.
+
+Checked against a market the index had covered, the log reproduced its winning side to within 0.2% on every wallet of the top six, in the same order.
+
+`--json` carries `tradeIndexEndsAt` when the index fell short and `tradeLog` when the log filled in, with the floor, the trade count, and whether the history itself was cut. Absent `tradeLog` beside a present `tradeIndexEndsAt` means nothing covered that market, and the empty `winners` array is not a claim that nobody won.
+
+The losing side, the dispute lifecycle, the queue and the watcher read from Gamma and were never affected. They are current.
 
 ## Following one wallet
 
@@ -362,6 +379,10 @@ recuse wallet 0x889e7f0464c72eb8cda1525ebc12b6aaba9d09e0
 Disputed markets sort to the top, because that is why you would look here rather than in a general wallet tracker. The same wallet appears on both sides of the Ukraine market: that is a spread, not a contradiction, and both legs are shown.
 
 Every gain is arithmetic, not an estimate. The position size comes from cumulative trades and the settlement price comes from the condition's on-chain payout, so a wallet that redeemed and vanished from every balance-based tracker is still fully visible here.
+
+`exited` is its own result, next to won and lost. It means the wallet had traded out of the position before the market settled, so it was paid nothing on the outcome and the money in that row came from trading. Counting it as a win would credit a wallet with a market it was not in when the answer landed.
+
+A wallet whose whole record sits past the index reads from the trade log instead, and its markets are priced from their closing prices where the chain payout is equally out of reach. Both are said in the caveats under the table. Before that fallback existed, a wallet holding 5.8 million tokens across two contested markets returned `no positions found for this address`.
 
 Split resolutions are counted as splits. UMA does hand down 50/50 outcomes, and calling one a loss on both sides is wrong on both.
 
@@ -406,11 +427,13 @@ The `Assessment` shape lost its `actors` and `conflicts` fields in the same rele
 
 Everything below is public and unauthenticated.
 
-Market catalogue and resolution history come from `gamma-api.polymarket.com`, which exposes the lifecycle as an ordered log: proposed, disputed, proposed, resolved. Current balances come from `data-api.polymarket.com`, with the display names accounts chose for themselves. Cumulative trades come from Goldsky's `polymarket-orderbook-resync` subgraph, which is the only free source that can see a redeemed position.
+Market catalogue and resolution history come from `gamma-api.polymarket.com`, which exposes the lifecycle as an ordered log: proposed, disputed, proposed, resolved. Current balances come from `data-api.polymarket.com`, with the display names accounts chose for themselves, and so does the trade log. Cumulative trades also come from Goldsky's `polymarket-orderbook-resync` subgraph, as far back as it reaches.
 
 Two traps worth knowing about if you build against any of it.
 
 Gamma ignores query parameters it does not recognise and answers with its default page rather than an error, so asking for one market by an unsupported filter hands you twenty unrelated ones and nothing in the response says the filter was dropped. Every lookup here is checked against what was requested.
+
+The trade log defaults `takerOnly` to true, which is one side of each fill and reads exactly like the whole market. It pages to 20,000 records and refuses past that with an error carrying HTTP 200, so a reader that treats a non-list body as the end of the data silently shortens every busy market.
 
 The subgraph will not sort positions by size without a lower bound on that size. The query times out in the store instead. `recuse` escalates the bound until the query lands and then reports which bound it used, because a floor is a fact about the reading rather than a display setting.
 

@@ -12,12 +12,14 @@ src/
     dataapi.ts    current balances, with the display names accounts chose
     subgraph.ts   cumulative trades, which is how the winning side is recovered,
                   and the index head, which is how far back that recovery works
+    trades.ts     the trade log, which is current and answers past that head
     chain.ts      the oracle layer, unbuilt. reports that it read nothing,
                   and validates RECUSE_RPC_URL on every reading
   core/       pure logic, no I/O except where noted
     safe.ts       making remote text safe to put on a terminal. pure
     dispute.ts    parses umaResolutionStatuses into rounds, phase, clock
     capture.ts    which side is measurable, concentration, repeat tallies
+    rebuild.ts    cumulative positions summed out of fills. pure
     wallet.ts     one wallet's ledger, priced from the on-chain payout. pure
     rank.ts       sort order, filtering, viewport. pure
     watch.ts      what counts as a resolution moving. pure
@@ -49,12 +51,12 @@ tools/
   site.yml    nightly site build, publishes to Pages
 ```
 
-`core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/recall.ts`, `core/queue.ts`, `core/ledger.ts`, `core/wallet.ts`, `core/mcp.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
+`core/dispute.ts`, `core/capture.ts`, `core/safe.ts`, `core/watch.ts`, `core/recall.ts`, `core/queue.ts`, `core/ledger.ts`, `core/wallet.ts`, `core/rebuild.ts`, `core/mcp.ts` and `core/rank.ts` are pure. Keep them that way. They hold every judgement the tool makes, which is why they carry most of the tests.
 
 ## Commands
 
 ```sh
-npm test          # 335 tests, no network, sub-second
+npm test          # 365 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
 npm run check     # the house rules below, enforced
@@ -79,6 +81,10 @@ Before trusting a change to anything that touches an API, run it against live da
 **Gamma caps `limit` at 100** no matter what you pass, and defaults to open markets, so a settled market is invisible without `closed=true`. It also ignores query parameters it does not recognise and returns its default page rather than an error. Always verify the record matches what you asked for, with `matchesRequest`.
 
 **Several Gamma fields arrive as JSON inside a string.** `outcomes` comes back as the literal text `["Yes", "No"]`. Use `parseEmbeddedJson`, which returns a fallback rather than throwing, so one malformed field costs a column instead of the run.
+
+**The trade log defaults to half the fills.** `data-api.polymarket.com/trades` takes `takerOnly`, and it defaults to true. One market returns 11,135 trades on the default and over 20,000 with it off, and wallet totals built on the default were short by up to 40%. HTTP 200, a plausible history, nothing saying so. `sources/trades.ts` sets it explicitly on every request and offers no way to unset it.
+
+**That log pages to 20,000 records and no further.** Offsets past 10,000 come back as `max historical trades offset of 10000 exceeded`, in a JSON object, with HTTP 200. A reader that treats a non-list body as the end of the data silently shortens every busy market. Use `filterType=CASH` with a dollar floor to read a market whole rather than reading the most recent slice of one, and report the floor.
 
 **Winners are invisible in balances.** They redeem and their balances go to zero. On the Zelenskyy market the winning side shows 907 tokens in `data-api` and 71,435,381 in the subgraph. Anything reasoning about "who won" from current holders is wrong. Use `sources/subgraph.ts`, and never add a balance to a cumulative buy.
 
@@ -200,3 +206,9 @@ A running log. One line each, added when something cost real time to find out an
 - The orderbook subgraph is roughly seven months behind the chain, and it answers a market it never indexed with `[]` and HTTP 200, identically to a market nobody traded. Two thirds of contested markets were being reported as markets nobody won. Read the head with `fetchIndexHead` and compare it to the market's close before believing an empty position list. A source with no errors to report is not a source that covered the ground.
 - `enrichedOrderFilleds`, `redemptions` and `marketProfits` all exist in that subgraph and all time out with any `where` clause on market or condition, floors included. Unfiltered and sorted on an indexed column is the one shape that answers, which is exactly enough to read the index head and nothing more. Timestamped trades are off the table for the same reason price history was.
 - `umaResolutionStatuses` is bare strings with no per-step outcome, so what was proposed in each round, and whether a dispute changed the answer, is not recoverable from Gamma.
+- The winning side has a second source and it is current. `data-api` serves a trade log, one record per fill, filterable by market or by wallet. Above a cash floor it reproduced the subgraph's top six wallets within 0.2%, in the same order, on a market the subgraph had indexed. The subgraph stays first where it reaches, because it needs no floor and counts back to the first trade.
+- `takerOnly` on that endpoint defaults to true, which is one side of each fill and looks exactly like the whole market. That default cost 40% of some wallet totals and nothing in the response mentioned it. Read the parameter list of any endpoint before trusting its shape.
+- The chain payout stops at the same head the trades do. `fetchTokenPayouts` on a token from this year returns `found: 0` with no error, so a ledger built on it prices every recent position at nothing. Gamma's closing prices stand in, and only where the chain answered with nothing.
+- A position the wallet had traded out of before settlement was neither won nor lost. It could not arise while positions came from the index, which was asked for survivors only, and it is ordinary in the log. `exited` counts it, and its trading profit stays in the total.
+- `Number(null)` is 0, and a range check catches that only where zero is illegal. Size and timestamp were safe; price was not, because a losing side really does trade at zero. Check for the absence itself, not for a value the absence happens to produce.
+- Caveats were clipped to the terminal width like table cells. The longest one ended at "so t…" in eighty columns. A sentence wraps and a cell truncates, and a caveat nobody can read is a caveat that is not there.
