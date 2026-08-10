@@ -105,6 +105,44 @@ export function widthOf(text: string): number {
   return [...text].length;
 }
 
+/**
+ * Break text across lines at word boundaries, never wider than `width`.
+ *
+ * Caveats used to go through `clip`, which meant the longest of them, the one
+ * saying the winning side was rebuilt from somewhere else and on what terms,
+ * ended at "so t…" on an eighty column terminal. A caveat exists to let the
+ * reader discount the number above it, and one cut before its own verb cannot
+ * do that. Truncation is right for a table cell, where the column has to hold
+ * its width, and wrong for a sentence, where nothing below it depends on the
+ * line ending where it does.
+ *
+ * A single word longer than the width is cut rather than left to overflow,
+ * since the only things that long here are addresses and hashes, and one of
+ * those wrapped across two lines reads as two identifiers.
+ */
+export function wrap(text: string, width: number): string[] {
+  if (width <= 0) return [];
+
+  const lines: string[] = [];
+  let line = '';
+
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line === '') {
+      line = widthOf(word) > width ? clip(word, width) : word;
+      continue;
+    }
+    if (widthOf(line) + 1 + widthOf(word) <= width) {
+      line += ` ${word}`;
+    } else {
+      lines.push(line);
+      line = widthOf(word) > width ? clip(word, width) : word;
+    }
+  }
+
+  if (line !== '') lines.push(line);
+  return lines.length > 0 ? lines : [''];
+}
+
 /** `0x614f…3b8a`. Enough to recognise, and to check against a full one. */
 export function shortAddress(address: string): string {
   return address.length > 13 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
