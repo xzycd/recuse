@@ -17,7 +17,7 @@
  */
 
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { formatSteps } from '../core/dispute.js';
 import { winnerMoney } from '../core/capture.js';
 import {

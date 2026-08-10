@@ -24,7 +24,7 @@ The suit market went five rounds. 52.1 million tokens went to zero when it final
 npm i -g github:xzycd/recuse
 ```
 
-Node 20 or newer. No API keys, no account, no config file.
+Node 22 or newer. No API keys, no account, no config file.
 
 Not on the npm registry yet, so there is no `npx recuse` and there is no
 `npm i -g recuse`. Both were in this file before they were true, which is a
@@ -38,7 +38,7 @@ recuse                          # contested markets, most contested first
 recuse queue                    # resolutions that have not finished, longest wait first
 recuse market <id-or-slug>      # one market, both sides of it
 recuse winners <id-or-slug>     # who bought the side that won, and for how much
-recuse wallet <address>         # one wallet's record, disputed markets first
+recuse wallet <address>         # settlement positions, disputed markets first
 recuse players                  # addresses that keep ending up on the losing side
 recuse regulars                 # addresses that keep ending up on the winning side
 recuse ledger                   # what your event log has accumulated
@@ -178,7 +178,7 @@ recuse watch --webhook https://api.telegram.org/bot<token>/sendMessage
 
 POSTs each event as JSON. Telegram, Discord and Slack all take one. A webhook that is down is counted and never stops the loop, because the event is already on stdout and in the log by then.
 
-There is no `--exec` and nothing is ever spawned. `recuse watch --json` emits one event per line as they happen, so
+There is no `--exec` and the runtime CLI never spawns a process. `recuse watch --json` emits one event per line as they happen, so
 
 ```sh
 recuse watch --json | while read -r e; do notify-send "$e"; done
@@ -199,6 +199,10 @@ does the same job without this program ever touching `child_process`.
 ```sh
 RECUSE_HOME=~/.recuse-iran recuse watch --once
 ```
+
+Only one watcher may use a state directory at a time. A second process exits
+instead of duplicating events or racing the checkpoint, and a stale lease from
+a killed process is reclaimed on the next run.
 
 ## Asking it from an agent
 
@@ -240,10 +244,10 @@ So the guardrails travel as data rather than as prose:
 - what was not covered is a field, not a footnote. `contested_markets` states
   how many scanned markets are missing from its own list, and `winning_side`
   reports the token floor the subgraph needed before it would answer
-- an empty list says which kind of empty it is. `winning_side` sets
-  `winningSideRead: false` when the market closed after the trade index stops,
-  because otherwise `"winners": []` reads as a market nobody won, and
-  `repeat_winners` counts those markets apart from the ones it actually read
+- an unread winner list is omitted. `winning_side` sets `winningSideRead: false`
+  and carries a structured `tradeIndexCoverage` reason when the index is behind
+  or its head cannot be established. `repeat_winners` counts those markets apart
+  from the ones it actually read
 - a lookup that could not be verified comes back as `found: false` rather than
   as the first row of whatever Gamma returned instead
 
@@ -315,7 +319,7 @@ ADDRESS       NAME                          WON   OF   TOKENS      NET
 
 117 of 494 winning wallets took more than one, across 20 markets scored.
 18 closed after the trade index stops at 2026-01-05 and were not read at all.
-positions under 1000 tokens were never requested, so small wins are absent.
+positions at or below 1000 tokens were never requested, so small wins are absent.
 someone wins every market. repeatedly is a question, not a finding.
 ```
 
@@ -338,7 +342,7 @@ the winning side was not read. the trade index stops at 2026-01-05
 and this market closed after that.
 ```
 
-Not "nobody won a $375M market". `--json` carries `tradeIndexEndsAt` next to the empty `winners` array for the same reason, and the MCP payload sets `winningSideRead: false`. An empty array is a claim, and it is not one this build is entitled to make about a recent market.
+Not "nobody won a $375M market". `--json` omits `winners` and carries a structured `tradeIndexCoverage` reason, plus `tradeIndexEndsAt` when the market is beyond the known head. The MCP payload sets `winningSideRead: false` for the same reason. An empty array is a claim, and it is not one this build is entitled to make about a recent market.
 
 The losing side, the dispute lifecycle, the queue and the watcher all read from Gamma and are current. It is only the trade-rebuilt half that stops in January.
 
@@ -347,6 +351,12 @@ The losing side, the dispute lifecycle, the queue and the watcher all read from 
 ```sh
 recuse wallet 0x889e7f0464c72eb8cda1525ebc12b6aaba9d09e0
 ```
+
+This is a record of positions carried into settlement, not every trade the
+wallet ever made. Positions sold before settlement and positions at or below the
+reported floor are absent. The record comes from that same trade index. Its JSON includes a structured
+`tradeIndex` head and every renderer states the date after which trades are
+absent, so a stale position record is never presented as the wallet's whole lifetime.
 
 ```
 38 resolved · 29 won · 9 lost · 1 open · +$859K net
@@ -420,7 +430,8 @@ The subgraph also reports `outcomeIndex` as null on every record checked, and `N
 
 ```sh
 npm install     # also builds, so ./dist/cli.js works straight after
-npm test        # 305 tests, no network, sub-second
+npm run typecheck
+npm test        # full offline suite, sub-second
 npm run build
 npm run check   # the house rules, enforced
 ```
@@ -428,6 +439,8 @@ npm run check   # the house rules, enforced
 Two runtime dependencies, ink and react.
 
 `npm run check` is `tools/housekeeping.mjs`, which CI also runs. It checks prose for em dashes and emoji, the commit log for attribution trailers, and every symbol in `src/` for whether the program can actually reach it. That last one exists because this repo has shipped unreachable code that read as working twice, and the note written down after the first time did not prevent the second, because remembering to grep is not a check. It walks out from `cli.ts` rather than counting references, since the dead chain layer was eight exports that called each other and three of them had passing tests.
+
+The owner release procedure, including npm provenance and recovery checks, is in [RELEASING.md](RELEASING.md).
 
 Remote text is treated as hostile. Display names are chosen by the same accounts the tool makes claims about, and a name carrying a terminal escape sequence could redraw the table above it. Everything is sanitised where it enters, not where it prints. See [SECURITY.md](SECURITY.md).
 

@@ -12,9 +12,9 @@ import { assess, assessAll, assessWallet, tallyRegulars, tallyRepeatPlayers } fr
 import { checkForUpdate, updateNotice, INSTALL_COMMAND } from './core/update.js';
 import { checkWebhook } from './core/notify.js';
 import { chainNote } from './sources/chain.js';
-import { redactMessage } from './core/safe.js';
+import { redactMessage, safeAddress } from './core/safe.js';
 import {
-  addToWatchlist, readEventLog, readEvents, readRadar, readSeen, readWatchlist,
+  acquireWatchLock, addToWatchlist, readEventLog, readEvents, readRadar, readSeen, readWatchlist,
   removeFromWatchlist, writeRadar, type SeenState,
 } from './core/store.js';
 import { recall, recallNote } from './core/recall.js';
@@ -54,12 +54,13 @@ const USAGE = `usage
   recuse queue                markets whose resolution has not finished
   recuse market <id|slug>     one market: resolution history, both sides
   recuse winners <id|slug>    who bought the side that won, and for how much
-  recuse wallet <address>     one wallet's record, disputed markets first
+  recuse wallet <address>     one wallet's settlement positions, disputed first
   recuse players              addresses left holding losing sides, repeatedly
   recuse regulars             addresses on the winning side, repeatedly
   recuse update               check whether a newer version was published
   recuse serve --mcp          answer over MCP, for an agent rather than a person
-  recuse --help
+  recuse --help               show this help
+  recuse --version            print the installed version
 
 watching
   recuse watch                poll for resolutions that move, until stopped
@@ -76,6 +77,8 @@ serving
                               no banner, no spinner, no update check.
 
 options
+  --help, -h        show this help
+  --version, -v     print the installed version
   --json            machine-readable output
   --card            market: a block sized for pasting into a chat
   --plain           force the plain renderer
@@ -120,6 +123,7 @@ interface Args {
   logo: boolean;
   colour?: boolean;
   help: boolean;
+  version: boolean;
   once: boolean;
   intervalMs: number;
   discover: boolean;
@@ -134,15 +138,40 @@ interface Args {
 
 /** Anything under this hammers Gamma for no benefit; disputes do not move in seconds. */
 const MIN_INTERVAL_MS = 30_000;
+const WATCH_KINDS = new Set<EventKind>([
+  'disputed', 'proposed', 'resolved', 'reset', 'settled', 'appeared', 'rewritten',
+]);
 
 export function parseArgs(argv: string[]): Args {
   const args: Args = {
     command: 'radar', json: false, plain: false, limit: 25, scan: 600,
-    all: false, winners: false, logo: true, help: false,
+    all: false, winners: false, logo: true, help: false, version: false,
     once: false, intervalMs: 300_000, discover: false, detail: true, card: false,
     mcp: false,
   };
   const rest: string[] = [];
+
+  const valueAfter = (index: number, flag: string): string => {
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new Error(`${flag} needs a value`);
+    return value;
+  };
+  const numberAfter = (
+    index: number,
+    flag: string,
+    opts: { integer?: boolean; min?: number; max?: number } = {},
+  ): number => {
+    const raw = valueAfter(index, flag);
+    const value = Number(raw);
+    if (!Number.isFinite(value) || (opts.integer && !Number.isSafeInteger(value))
+      || (opts.min !== undefined && value < opts.min)
+      || (opts.max !== undefined && value > opts.max)) {
+      const range = `${opts.min !== undefined ? ` at least ${opts.min}` : ''}`
+        + `${opts.max !== undefined ? ` and at most ${opts.max}` : ''}`;
+      throw new Error(`${flag} needs ${opts.integer ? 'an integer' : 'a number'}${range}`);
+    }
+    return value;
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -153,41 +182,90 @@ export function parseArgs(argv: string[]): Args {
     else if (a === '--no-logo') args.logo = false;
     else if (a === '--no-color' || a === '--no-colour') args.colour = false;
     else if (a === '--help' || a === '-h') args.help = true;
+    else if (a === '--version' || a === '-v') args.version = true;
     else if (a === '--once') args.once = true;
     else if (a === '--discover') args.discover = true;
     else if (a === '--no-detail') args.detail = false;
     else if (a === '--card') args.card = true;
     else if (a === '--mcp') args.mcp = true;
-    else if (a === '--limit') args.limit = Number(argv[++i]) || args.limit;
-    else if (a === '--scan') args.scan = Number(argv[++i]) || args.scan;
-    else if (a === '--min-pool') args.minPool = Number(argv[++i]) || args.minPool;
-    else if (a === '--only') args.only = argv[++i];
-    else if (a === '--webhook') args.webhook = argv[++i];
-    else if (a === '--theme') args.theme = argv[++i];
+    else if (a === '--limit') {
+      args.limit = numberAfter(i, a, { integer: true, min: 1, max: 500 });
+      i += 1;
+    }
+    else if (a === '--scan') {
+      args.scan = numberAfter(i, a, { integer: true, min: 1, max: 10_000 });
+      i += 1;
+    }
+    else if (a === '--min-pool') {
+      args.minPool = numberAfter(i, a, { min: 0, max: Number.MAX_SAFE_INTEGER });
+      i += 1;
+    }
+    else if (a === '--only') {
+      args.only = valueAfter(i, a);
+      i += 1;
+    }
+    else if (a === '--webhook') {
+      args.webhook = valueAfter(i, a);
+      i += 1;
+    }
+    else if (a === '--theme') {
+      args.theme = valueAfter(i, a);
+      i += 1;
+    }
     else if (a === '--interval') {
-      const seconds = Number(argv[++i]);
+      const seconds = numberAfter(i, a, { min: Number.MIN_VALUE, max: 7 * 24 * 60 * 60 });
+      i += 1;
       // Clamped rather than rejected. Someone asking for five seconds wants it
       // responsive, and the right answer is to give them the fastest polite
       // rate rather than an error.
-      args.intervalMs = Number.isFinite(seconds) && seconds > 0
-        ? Math.max(MIN_INTERVAL_MS, seconds * 1000)
-        : args.intervalMs;
+      args.intervalMs = Math.max(MIN_INTERVAL_MS, seconds * 1000);
     }
     else if (a?.startsWith('-')) throw new Error(`unknown option: ${a}`);
     else if (a) rest.push(a);
   }
 
   if (rest[0]) args.command = rest[0];
+  if (args.command === 'help') {
+    args.command = 'radar';
+    args.help = true;
+  } else if (args.command === 'version') {
+    args.command = 'radar';
+    args.version = true;
+  }
 
   // `watch` is the only command with a subcommand, so the second positional
   // means different things depending on the first. Everywhere else it is the
   // market, and treating `watch add <slug>` as `command=watch target=add` would
   // silently look up a market called "add".
   if (args.command === 'watch') {
+    if (rest.length > 3) throw new Error(`unexpected argument: ${rest[3]}`);
     if (rest[1]) args.sub = rest[1];
     if (rest[2]) args.target = rest[2];
+    if (args.sub && !['run', 'add', 'rm', 'remove', 'list'].includes(args.sub)) {
+      throw new Error(`unknown watch command: ${args.sub}`);
+    }
+    if ((args.sub === 'list' || args.sub === 'run') && args.target) {
+      throw new Error(`unexpected argument: ${args.target}`);
+    }
   } else if (rest[1]) {
+    if (rest.length > 2) throw new Error(`unexpected argument: ${rest[2]}`);
     args.target = rest[1];
+  }
+
+  const commandsWithTarget = new Set(['market', 'winners', 'wallet', 'actor']);
+  if (args.command !== 'watch' && args.target && !commandsWithTarget.has(args.command)) {
+    throw new Error(`unexpected argument: ${args.target}`);
+  }
+  if (args.target && args.target.length > 256) throw new Error('target is too long');
+
+  if (args.only) {
+    const kinds = args.only.split(',').map((kind) => kind.trim()).filter(Boolean);
+    const invalid = kinds.find((kind) => !WATCH_KINDS.has(kind as EventKind));
+    if (invalid || kinds.length === 0) throw new Error(`unknown event kind: ${invalid ?? args.only}`);
+    args.only = [...new Set(kinds)].join(',');
+  }
+  if (args.theme && args.theme !== 'list' && !themeNames().includes(args.theme)) {
+    throw new Error(`unknown theme: ${args.theme}`);
   }
 
   return args;
@@ -240,12 +318,23 @@ async function runRadar(args: Args): Promise<number> {
     ? { update() {}, stop() {} }
     : startSpinner('scanning markets', { theme: style.theme, depth: style.depth });
 
-  let found: { markets: Awaited<ReturnType<typeof fetchMarkets>>; scanned: number };
+  let found: {
+    markets: Awaited<ReturnType<typeof fetchMarkets>>;
+    scanned: number;
+    contestedTotal: number;
+  };
   let assessments: Awaited<ReturnType<typeof assessAll>>;
   try {
-    found = args.all
-      ? await fetchMarkets({ limit: args.scan }).then((m) => ({ markets: m, scanned: m.length }))
-      : await fetchContestedMarkets(args.scan);
+    if (args.all) {
+      const all = await fetchBothStates(args.scan);
+      found = {
+        ...all,
+        contestedTotal: all.markets.filter((m) => m.resolutionSteps.includes('disputed')).length,
+      };
+    } else {
+      const contested = await fetchContestedMarkets(args.scan);
+      found = { ...contested, contestedTotal: contested.markets.length };
+    }
 
     const shown = found.markets.slice(0, args.limit);
     spinner.update(`0/${shown.length} read`);
@@ -257,32 +346,37 @@ async function runRadar(args: Args): Promise<number> {
     spinner.stop();
   }
 
-  const { markets, scanned } = found;
+  const { markets, scanned, contestedTotal } = found;
 
   // What changed since the last run, and the record of this one. Read before
-  // the write, obviously, and the write is best effort: a radar that cannot
-  // save its snapshot should still print the table it already has.
-  const previous: SeenState = await readRadar().catch(() => ({ markets: {} }));
+  // the write, obviously. A corrupt snapshot is not treated as a first run,
+  // because that would silently overwrite the only baseline we have.
+  const previous: SeenState = await readRadar();
   const moved = recall(assessments, previous, new Date());
   const note = recallNote(moved, assessments.length);
 
   const now = new Date();
-  await writeRadar({
-    baselineAt: previous.baselineAt ?? now.toISOString(),
-    markets: {
-      ...previous.markets,
-      ...Object.fromEntries(
-        assessments
-          .filter((a) => a.market.conditionId)
-          .map((a) => [a.market.conditionId, snapshot(a.market, now)]),
-      ),
-    },
-  }).catch(() => {});
+  let snapshotError: string | undefined;
+  try {
+    await writeRadar({
+      baselineAt: previous.baselineAt ?? now.toISOString(),
+      markets: {
+        ...previous.markets,
+        ...Object.fromEntries(
+          assessments
+            .filter((a) => a.market.conditionId)
+            .map((a) => [a.market.conditionId, snapshot(a.market, now)]),
+        ),
+      },
+    });
+  } catch (err) {
+    snapshotError = redactMessage((err as Error).message ?? String(err));
+  }
 
   if (args.json) {
     emitJson({
       scanned,
-      contested: markets.length,
+      contested: contestedTotal,
       shown: assessments.length,
       // Same figures the table shows. Anything you can read you can pipe.
       recall: {
@@ -294,12 +388,14 @@ async function runRadar(args: Args): Promise<number> {
         unseen: moved.unseen,
         movement: Object.fromEntries(moved.movement),
       },
+      ...(snapshotError ? { stateWarning: `radar snapshot was not saved: ${snapshotError}` } : {}),
       assessments,
     });
     return 0;
   }
 
   const notice = await pending;
+  if (snapshotError) process.stderr.write(`radar snapshot was not saved: ${snapshotError}\n`);
 
   // The interactive view needs a real terminal to draw into and keys to read
   // from. Piped, redirected or explicitly asked for plain, it renders once and
@@ -316,7 +412,7 @@ async function runRadar(args: Args): Promise<number> {
       React.createElement(App, {
         assessments,
         scanned,
-        contestedTotal: markets.length,
+        contestedTotal,
         theme: style.theme,
         evidence: chainNote(),
         movement: moved.movement,
@@ -338,7 +434,7 @@ async function runRadar(args: Args): Promise<number> {
       {
         scanned,
         hidden: scanned - markets.length,
-        contestedTotal: markets.length,
+        contestedTotal,
         evidence: chainNote(),
         recall: note,
         notice,
@@ -491,9 +587,10 @@ async function runWinners(args: Args): Promise<number> {
       market: assessment.market.conditionId,
       question: assessment.market.question,
       concentration: assessment.winnerConcentration,
-      winners: assessment.winners ?? [],
-      // Travels with the empty array it explains. Without it a consumer reads
-      // `"winners": []` as a market nobody won.
+      ...(assessment.winners ? { winners: assessment.winners } : {}),
+      ...(assessment.tradeIndexCoverage
+        ? { tradeIndexCoverage: assessment.tradeIndexCoverage }
+        : {}),
       ...(assessment.tradeIndexEndsAt ? { tradeIndexEndsAt: assessment.tradeIndexEndsAt } : {}),
       caveats: assessment.caveats,
     });
@@ -511,6 +608,11 @@ async function runWallet(args: Args): Promise<number> {
     process.stderr.write('recuse wallet: needs a 0x address\n');
     return 2;
   }
+  const address = safeAddress(args.target);
+  if (!address) {
+    process.stderr.write('recuse wallet: address must be 0x followed by 40 hexadecimal characters\n');
+    return 2;
+  }
 
   const spinner = args.json
     ? { update() {}, stop() {} }
@@ -518,14 +620,14 @@ async function runWallet(args: Args): Promise<number> {
 
   let ledger;
   try {
-    ledger = await assessWallet(args.target, { limit: args.limit });
+    ledger = await assessWallet(address, { limit: args.limit });
   } finally {
     spinner.stop();
   }
 
   if (args.json) {
     emitJson(ledger);
-    return 0;
+    return ledger.entries.length === 0 ? 1 : 0;
   }
 
   emit(renderWallet(ledger, style));
@@ -601,7 +703,7 @@ async function runUpdate(args: Args): Promise<number> {
 
   if (args.json) {
     emitJson(status);
-    return 0;
+    return status.reason ? 1 : 0;
   }
 
   if (status.reason) {
@@ -728,43 +830,54 @@ async function runWatch(args: Args): Promise<number> {
     if (summary) emit(summary);
   };
 
-  if (args.once) {
-    report(await runPass(options));
+  const releaseLock = await acquireWatchLock();
+  try {
+    if (args.once) {
+      const result = await runPass(options);
+      report(result);
+      return result.polled === 0 && result.failed.length > 0 ? 1 : 0;
+    }
+
+    if (!args.json) {
+      showSplash(args, style);
+      emit(
+        renderWatchStart(
+          {
+            watching: list.markets.length,
+            discover: args.discover,
+            scan: args.scan,
+            intervalMs: args.intervalMs,
+            webhook: Boolean(args.webhook),
+          },
+          style,
+        ),
+      );
+    }
+
+    // Ctrl-c resolves this, and the loop races it against its own sleep, so a
+    // stop during a five minute wait exits now rather than in five minutes.
+    let release: () => void = () => {};
+    const stop = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const onSignal = () => {
+      release();
+    };
+    process.once('SIGINT', onSignal);
+    process.once('SIGTERM', onSignal);
+
+    try {
+      await runLoop({ ...options, intervalMs: args.intervalMs, onPass: report, stop });
+    } finally {
+      process.off('SIGINT', onSignal);
+      process.off('SIGTERM', onSignal);
+    }
+
+    if (!args.json) emit(dimly('stopped', style));
     return 0;
+  } finally {
+    await releaseLock();
   }
-
-  if (!args.json) {
-    showSplash(args, style);
-    emit(
-      renderWatchStart(
-        {
-          watching: list.markets.length,
-          discover: args.discover,
-          scan: args.scan,
-          intervalMs: args.intervalMs,
-          webhook: Boolean(args.webhook),
-        },
-        style,
-      ),
-    );
-  }
-
-  // Ctrl-c resolves this, and the loop races it against its own sleep, so a
-  // stop during a five minute wait exits now rather than in five minutes.
-  let release: () => void = () => {};
-  const stop = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const onSignal = () => {
-    release();
-  };
-  process.once('SIGINT', onSignal);
-  process.once('SIGTERM', onSignal);
-
-  await runLoop({ ...options, intervalMs: args.intervalMs, onPass: report, stop });
-
-  if (!args.json) emit(dimly('stopped', style));
-  return 0;
 }
 
 async function runEvents(args: Args): Promise<number> {
@@ -874,6 +987,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   } catch (err) {
     process.stderr.write(`${(err as Error).message}\n\n${USAGE}`);
     return 2;
+  }
+
+  if (args.version) {
+    if (args.json) emitJson({ version: version() });
+    else emit(version());
+    return 0;
   }
 
   if (args.theme === 'list') return runThemeList(args);

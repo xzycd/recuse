@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,8 +31,20 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--nope'])).toThrow(/unknown option/);
   });
 
-  it('keeps the default when a numeric flag is not a number', () => {
-    expect(parseArgs(['--limit', 'abc']).limit).toBe(25);
+  it('rejects malformed numeric flags instead of silently using a default', () => {
+    expect(() => parseArgs(['--limit', 'abc'])).toThrow(/--limit needs/);
+    expect(() => parseArgs(['--limit', '-1'])).toThrow(/at least 1/);
+    expect(() => parseArgs(['--scan', '1.5'])).toThrow(/integer/);
+    expect(() => parseArgs(['--min-pool', 'Infinity'])).toThrow(/number/);
+    expect(() => parseArgs(['--scan', '10001'])).toThrow(/at most 10000/);
+    expect(() => parseArgs(['--limit', '501'])).toThrow(/at most 500/);
+  });
+
+  it('rejects flags with missing values and extra positional arguments', () => {
+    expect(() => parseArgs(['--limit'])).toThrow(/needs a value/);
+    expect(() => parseArgs(['--theme', '--json'])).toThrow(/needs a value/);
+    expect(() => parseArgs(['market', 'one', 'two'])).toThrow(/unexpected argument/);
+    expect(() => parseArgs(['queue', 'unused'])).toThrow(/unexpected argument/);
   });
 
   it('supports both colour spellings', () => {
@@ -43,11 +55,19 @@ describe('parseArgs', () => {
   it('treats -h and --help alike', () => {
     expect(parseArgs(['-h']).help).toBe(true);
     expect(parseArgs(['--help']).help).toBe(true);
+    expect(parseArgs(['help']).help).toBe(true);
+  });
+
+  it('treats -v, --version and the version command alike', () => {
+    expect(parseArgs(['-v']).version).toBe(true);
+    expect(parseArgs(['--version']).version).toBe(true);
+    expect(parseArgs(['version']).version).toBe(true);
   });
 
   it('reads a theme name and the list request', () => {
     expect(parseArgs(['--theme', 'ember']).theme).toBe('ember');
     expect(parseArgs(['--theme', 'list']).theme).toBe('list');
+    expect(() => parseArgs(['--theme', 'missing'])).toThrow(/unknown theme/);
   });
 
   it('draws the banner unless told not to', () => {
@@ -103,20 +123,26 @@ describe('parseArgs, watch', () => {
     // fastest polite rate serves that better than an error does, and disputes
     // do not move in seconds anyway.
     expect(parseArgs(['watch', '--interval', '5']).intervalMs).toBe(30_000);
-    expect(parseArgs(['watch', '--interval', '0']).intervalMs).toBe(300_000);
-    expect(parseArgs(['watch', '--interval', 'soon']).intervalMs).toBe(300_000);
+    expect(() => parseArgs(['watch', '--interval', '0'])).toThrow(/at least/);
+    expect(() => parseArgs(['watch', '--interval', 'soon'])).toThrow(/number/);
   });
 
   it('reads the filters', () => {
     const a = parseArgs(['watch', '--min-pool', '1000000', '--only', 'disputed,resolved']);
     expect(a.minPool).toBe(1_000_000);
     expect(a.only).toBe('disputed,resolved');
+    expect(() => parseArgs(['watch', '--only', 'disputed,anything'])).toThrow(/unknown event kind/);
   });
 
   it('reads a webhook and lets detail be turned off', () => {
     const a = parseArgs(['watch', '--webhook', 'https://example.com/h', '--no-detail']);
     expect(a.webhook).toBe('https://example.com/h');
     expect(a.detail).toBe(false);
+  });
+
+  it('rejects an unknown subcommand rather than showing the watchlist', () => {
+    expect(() => parseArgs(['watch', 'ad'])).toThrow(/unknown watch command/);
+    expect(() => parseArgs(['watch', 'list', 'extra'])).toThrow(/unexpected argument/);
   });
 });
 
@@ -181,5 +207,30 @@ describe('the built binary', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it.skipIf(!existsSync(entry))('prints its package version through a bin symlink', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'recuse-bin-'));
+    try {
+      const link = join(dir, 'recuse');
+      symlinkSync(entry, link);
+      const out = execFileSync(process.execPath, [link, '--version'], {
+        encoding: 'utf8',
+        env: { ...process.env, RECUSE_NO_UPDATE_CHECK: '1' },
+      });
+      expect(out.trim()).toBe(version());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!existsSync(entry))('rejects a malformed wallet before any network request', () => {
+    const result = spawnSync(process.execPath, [entry, 'wallet', '0x1', '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env, RECUSE_NO_UPDATE_CHECK: '1' },
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('40 hexadecimal characters');
+    expect(result.stdout).toBe('');
   });
 });

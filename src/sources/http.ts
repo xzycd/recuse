@@ -45,6 +45,7 @@ export const MAX_BODY_BYTES = 32 * 1024 * 1024;
 export async function readJsonCapped<T>(res: Response, max = MAX_BODY_BYTES): Promise<T> {
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > max) {
+    await res.body?.cancel().catch(() => {});
     throw new Error(`response too large: ${declared} bytes`);
   }
 
@@ -103,6 +104,7 @@ export async function getJson<T>(url: string, opts: FetchOptions = {}): Promise<
     try {
       const res = await fetch(url, {
         method,
+        redirect: 'error',
         signal: controller.signal,
         headers: body ? { 'Content-Type': 'application/json', ...headers } : headers,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -111,6 +113,10 @@ export async function getJson<T>(url: string, opts: FetchOptions = {}): Promise<
       if (!res.ok) {
         const retryable = res.status >= 500 || res.status === 429;
         const err = new HttpError(`${res.status} ${res.statusText}`, res.status, url);
+        // A response that will not be read still has to be released. Leaving a
+        // 429 or 5xx body open on every retry eventually exhausts the connection
+        // pool during the exact outage in which retries are most common.
+        await res.body?.cancel().catch(() => {});
         if (!retryable) throw err;
         lastError = err;
         continue;

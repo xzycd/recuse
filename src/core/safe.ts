@@ -38,10 +38,12 @@ function isUnsafeCodePoint(cp: number): boolean {
   if (cp >= 0x80 && cp <= 0x9f) return true;
   // Zero width space, joiner, non-joiner, and the LTR/RTL marks.
   if (cp >= 0x200b && cp <= 0x200f) return true;
+  // Arabic letter mark, another invisible bidirectional control.
+  if (cp === 0x061c) return true;
   // Bidirectional embedding and override.
   if (cp >= 0x202a && cp <= 0x202e) return true;
-  // Bidirectional isolates.
-  if (cp >= 0x2066 && cp <= 0x2069) return true;
+  // Word joiner, bidirectional isolates, and deprecated directional controls.
+  if (cp >= 0x2060 && cp <= 0x206f) return true;
   // Byte order mark used mid-string, and the interlinear annotation set.
   if (cp === 0xfeff || (cp >= 0xfff9 && cp <= 0xfffb)) return true;
   // Variation selectors and tag characters, both invisible and both usable to
@@ -87,7 +89,12 @@ export function safeText(value: unknown, max = MAX_TEXT): string {
   }
 
   out = out.replace(/\s+/g, ' ').trim();
-  return out.length > max ? `${out.slice(0, max - 1)}…` : out;
+
+  // The walk above is by code point, so the final cap has to be as well. A
+  // UTF-16 slice can cut an astral character into a lone surrogate exactly at
+  // the boundary, which then changes again when JSON serialises it.
+  const points = [...out];
+  return points.length > max ? `${points.slice(0, Math.max(0, max - 1)).join('')}…` : out;
 }
 
 /**
@@ -151,17 +158,31 @@ export function redactUrl(value: string): string {
 
   // Any path segment long enough and opaque enough to be a key is treated as
   // one. Provider URLs put the key last and nothing else there looks like this.
-  const segments = url.pathname.split('/').map((seg) =>
-    /^[A-Za-z0-9_-]{20,}$/.test(seg) ? 'redacted' : seg,
-  );
+  const segments = url.pathname.split('/').map((seg) => {
+    let decoded = seg;
+    try {
+      decoded = decodeURIComponent(seg);
+    } catch {
+      // A malformed escape stays as text and is tested by the conservative
+      // opaque-segment rule below.
+    }
+    const opaque = /^[A-Za-z0-9_-]{20,}$/.test(decoded);
+    const telegramBot = /^bot\d{5,}:[A-Za-z0-9_-]{15,}$/.test(decoded);
+    return opaque || telegramBot ? 'redacted' : seg;
+  });
   url.pathname = segments.join('/');
+  if (url.hash) url.hash = '#redacted';
 
   return url.toString();
 }
 
 /** Scrub every URL-shaped substring out of arbitrary error text. */
 export function redactMessage(message: string): string {
-  return message.replace(/https?:\/\/[^\s'"]+/g, (match) => redactUrl(match));
+  const redacted = message.replace(/https?:\/\/[^\s'"]+/g, (match) => redactUrl(match));
+  // Error text can come from a remote JSON body too. It reaches stderr, MCP
+  // and caveats, so credentials and terminal controls have to be removed at
+  // the same boundary.
+  return safeText(redacted, 1000);
 }
 
 /**

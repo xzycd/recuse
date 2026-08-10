@@ -25,7 +25,14 @@ import { unreachable } from './reachable.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Prose files. Source comments are checked separately, below. */
-const PROSE = ['README.md', 'DNA.md', 'CLAUDE.md', 'SECURITY.md', 'CHANGELOG.md'];
+const PROSE = [
+  'README.md',
+  'DNA.md',
+  'CLAUDE.md',
+  'SECURITY.md',
+  'CHANGELOG.md',
+  'RELEASING.md',
+];
 
 const failures = [];
 

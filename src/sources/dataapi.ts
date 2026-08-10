@@ -8,9 +8,10 @@
  * side holds a few hundred, because the losers went to zero.
  */
 
-import { getJson, num, numOrUndefined } from './http.js';
-import { safeAddress, safeHash, safeText } from '../core/safe.js';
-import type { Holder, Market, Side } from '../types.js';
+import { getJson, numOrUndefined } from './http.js';
+import { safeAddress, safeHash, safeText, safeTokenId } from '../core/safe.js';
+import { sideForIndex } from '../core/capture.js';
+import type { Holder, Market } from '../types.js';
 
 const BASE = 'https://data-api.polymarket.com';
 
@@ -55,15 +56,6 @@ export function displayName(raw: Named): string | undefined {
   return candidate;
 }
 
-/** Map an outcome index onto a side, using the market's own labels. */
-export function sideForIndex(market: Market, index: number): Side {
-  const label = market.outcomes[index]?.toLowerCase();
-  if (label === 'yes') return 'YES';
-  if (label === 'no') return 'NO';
-  // Non-binary or unlabelled markets: index 0 is the affirmative by convention.
-  return index === 0 ? 'YES' : 'NO';
-}
-
 /**
  * Top holders of a market, both sides, largest first.
  *
@@ -77,15 +69,34 @@ export async function fetchHolders(market: Market, limit = 100): Promise<Holder[
   const condition = safeHash(market.conditionId);
   if (!condition) return [];
 
-  const size = Math.min(Math.max(1, Math.floor(limit)), 500);
+  const size = Number.isFinite(limit)
+    ? Math.min(Math.max(1, Math.floor(limit)), 500)
+    : 100;
   const url = `${BASE}/holders?market=${condition}&limit=${size}`;
   const groups = await getJson<RawHolderGroup[]>(url);
-  if (!Array.isArray(groups)) return [];
+  if (!Array.isArray(groups)) throw new Error('holders endpoint returned an invalid response');
 
   const out: Holder[] = [];
+  const expectedTokens = new Set(market.tokenIds.filter((token): token is string => token !== undefined));
+  const seenTokens = new Set<string>();
 
   for (const group of groups) {
+    if (!group || typeof group !== 'object' || Array.isArray(group)) {
+      throw new Error('holders endpoint returned an invalid group');
+    }
+    if (group.holders !== undefined && !Array.isArray(group.holders)) {
+      throw new Error('holders endpoint returned an invalid holder list');
+    }
+    const token = safeTokenId(group.token);
+    if (!token || (expectedTokens.size > 0 && !expectedTokens.has(token))) {
+      throw new Error('holders endpoint returned a token outside the requested market');
+    }
+    if (seenTokens.has(token)) throw new Error('holders endpoint returned a duplicate token group');
+    seenTokens.add(token);
+    const tokenIndex = market.tokenIds.indexOf(token);
+
     for (const raw of group.holders ?? []) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
       const address = safeAddress(raw.proxyWallet);
       if (!address) continue;
 
@@ -96,25 +107,45 @@ export async function fetchHolders(market: Market, limit = 100): Promise<Holder[
       // stopping, not a workaround for it being missing.
       const index = numOrUndefined(raw.outcomeIndex);
       if (index === undefined) continue;
+      if (tokenIndex >= 0 && index !== tokenIndex) continue;
+      const side = sideForIndex(market, index);
+      if (side === undefined) continue;
 
-      const size = num(raw.amount);
-      if (size <= 0) continue;
+      const amount = numOrUndefined(raw.amount);
+      if (amount === undefined || amount <= 0) continue;
 
-      const price = market.outcomePrices[index] ?? 0;
+      const price = market.outcomePrices[index];
 
       out.push({
         address,
         name: displayName(raw),
-        side: sideForIndex(market, index),
-        size,
-        // A resolved market prices the losing side at zero, which is correct:
-        // that position really is worth nothing now.
-        value: size * price,
+        side,
+        size: amount,
+        // Missing and zero are different here. A resolved losing side really is
+        // worth zero, while an absent price says nothing about its value.
+        ...(price === undefined ? {} : { value: amount * price }),
       });
     }
   }
 
-  return out.sort((a, b) => b.size - a.size);
+  // A source retry or duplicate group must not double a wallet's weight in the
+  // concentration denominator. Merge by the identity the table actually uses.
+  const merged = new Map<string, Holder>();
+  for (const holder of out) {
+    const key = `${holder.address}:${holder.side}`;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { ...holder });
+      continue;
+    }
+    existing.size += holder.size;
+    existing.value = existing.value === undefined || holder.value === undefined
+      ? undefined
+      : existing.value + holder.value;
+    existing.name ??= holder.name;
+  }
+
+  return [...merged.values()].sort((a, b) => b.size - a.size);
 }
 
 /**

@@ -11,7 +11,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "repository": {
     "type": "git",
@@ -21,9 +21,15 @@
   "bugs": {
     "url": "https://github.com/xzycd/recuse/issues"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "typecheck": "tsc --project tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "node tools/housekeeping.mjs",

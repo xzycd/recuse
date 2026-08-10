@@ -70,10 +70,12 @@ export interface TokenPosition {
 
 export interface PositionScan {
   positions: TokenPosition[];
-  /** Positions below this many tokens were not requested. */
+  /** Positions at or below this many tokens were not requested. */
   floor: number;
   /** True when the page filled, so there are more positions above the floor. */
   truncated: boolean;
+  /** Rows returned by the store that were malformed and therefore omitted. */
+  dropped: number;
   /** Set when nothing could be read. Never an empty list presented as a zero. */
   failed?: string;
 }
@@ -87,11 +89,16 @@ interface RawPosition {
   netValue?: string;
 }
 
-/** Fixed point to a plain number. Positions are far below Number's integer limit. */
-function fromUnits(value: string | undefined): number {
-  if (!value) return 0;
+interface FixedUnits {
+  integer: bigint;
+  value: number;
+}
+
+/** Fixed point to a plain number, without inventing zero for an absent field. */
+function fromUnits(value: string | undefined): FixedUnits | undefined {
+  if (!value || !/^-?\d+$/.test(value)) return undefined;
   const n = Number(value);
-  return Number.isFinite(n) ? n / UNIT : 0;
+  return Number.isSafeInteger(n) ? { integer: BigInt(value), value: n / UNIT } : undefined;
 }
 
 export function toPosition(raw: RawPosition): TokenPosition | undefined {
@@ -99,15 +106,27 @@ export function toPosition(raw: RawPosition): TokenPosition | undefined {
   if (!address) return undefined;
 
   const bought = fromUnits(raw.quantityBought);
-  if (bought <= 0) return undefined;
+  const sold = fromUnits(raw.quantitySold);
+  const net = fromUnits(raw.netQuantity);
+  const spent = fromUnits(raw.valueBought);
+  const netSpent = fromUnits(raw.netValue);
+
+  // Every field below changes the financial answer. A missing net cost is not a
+  // free position, and a missing net quantity is not a position of zero.
+  if (
+    bought === undefined || sold === undefined || net === undefined
+    || spent === undefined || netSpent === undefined
+    || bought.value <= 0 || sold.value < 0 || net.value < 0 || spent.value < 0
+    || net.integer !== bought.integer - sold.integer
+  ) return undefined;
 
   return {
     address,
-    bought,
-    sold: fromUnits(raw.quantitySold),
-    net: fromUnits(raw.netQuantity),
-    spent: fromUnits(raw.valueBought),
-    netSpent: fromUnits(raw.netValue),
+    bought: bought.value,
+    sold: sold.value,
+    net: net.value,
+    spent: spent.value,
+    netSpent: netSpent.value,
   };
 }
 
@@ -118,12 +137,16 @@ async function query<T>(body: string, timeoutMs: number): Promise<T> {
   try {
     const res = await fetch(ENDPOINT, {
       method: 'POST',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/json' },
       body,
       signal: controller.signal,
     });
 
-    if (!res.ok) throw new HttpError(`${res.status} ${res.statusText}`, res.status, ENDPOINT);
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      throw new HttpError(`${res.status} ${res.statusText}`, res.status, ENDPOINT);
+    }
 
     const json = await readJsonCapped<{ data?: T; errors?: { message?: string }[] }>(res);
     // A GraphQL error arrives with HTTP 200 and a null data field. Treating that
@@ -154,26 +177,49 @@ export async function fetchTokenPositions(
   const { limit = 20, timeoutMs = 20_000 } = opts;
 
   const token = safeTokenId(tokenId);
-  if (!token) return { positions: [], floor: 0, truncated: false, failed: 'malformed token id' };
+  if (!token) {
+    return { positions: [], floor: 0, truncated: false, dropped: 0, failed: 'malformed token id' };
+  }
+
+  const requested = Number.isFinite(limit)
+    ? Math.min(Math.max(1, Math.floor(limit)), 100)
+    : 20;
+  if (opts.floor !== undefined && (!Number.isFinite(opts.floor) || opts.floor < 0)) {
+    return { positions: [], floor: 0, truncated: false, dropped: 0, failed: 'invalid position floor' };
+  }
 
   const ladder = opts.floor === undefined ? FLOOR_LADDER : [opts.floor];
   let lastError = 'subgraph did not answer';
 
   for (const floor of ladder) {
-    const units = (BigInt(Math.max(0, Math.floor(floor))) * BigInt(UNIT)).toString();
+    const effectiveFloor = Math.max(0, Math.floor(floor));
+    const units = (BigInt(effectiveFloor) * BigInt(UNIT)).toString();
     // The token id and the floor are both validated numerics by this point, so
     // there is nothing here a caller could inject a clause through.
-    const gql = `{ marketPositions(where: {market: "${token}", quantityBought_gt: "${units}"}, orderBy: quantityBought, orderDirection: desc, first: ${Math.min(Math.max(1, Math.floor(limit)), 100)}) { user { id } quantityBought quantitySold netQuantity valueBought netValue } }`;
+    const gql = `{ marketPositions(where: {market: "${token}", quantityBought_gt: "${units}"}, orderBy: quantityBought, orderDirection: desc, first: ${requested}) { user { id } quantityBought quantitySold netQuantity valueBought netValue } }`;
 
     try {
       const data = await query<{ marketPositions?: RawPosition[] }>(
         JSON.stringify({ query: gql }),
         timeoutMs,
       );
-      const rows = data.marketPositions ?? [];
+      if (!Array.isArray(data.marketPositions)) throw new Error('subgraph returned no position list');
+      const rows = data.marketPositions;
       const positions = rows.map(toPosition).filter((p): p is TokenPosition => p !== undefined);
+      const dropped = rows.length - positions.length;
+      if (rows.length > 0 && positions.length === 0) {
+        throw new Error('subgraph returned no usable positions');
+      }
+      if (new Set(positions.map((position) => position.address)).size !== positions.length) {
+        throw new Error('subgraph returned duplicate positions for one wallet');
+      }
 
-      return { positions, floor, truncated: rows.length >= limit };
+      return {
+        positions,
+        floor: effectiveFloor,
+        truncated: rows.length >= requested,
+        dropped,
+      };
     } catch (err) {
       lastError = redactMessage((err as Error).message ?? String(err));
       // Only a timeout is worth escalating the floor for. Anything else will
@@ -182,7 +228,7 @@ export async function fetchTokenPositions(
     }
   }
 
-  return { positions: [], floor: 0, truncated: false, failed: lastError.slice(0, 160) };
+  return { positions: [], floor: 0, truncated: false, dropped: 0, failed: lastError.slice(0, 160) };
 }
 
 /** How far the trade index actually reaches. */
@@ -197,6 +243,7 @@ export interface IndexHead {
 
 /** Re-read at most this often. A watcher runs for days and this does move. */
 const HEAD_TTL_MS = 15 * 60 * 1000;
+const FAILED_HEAD_TTL_MS = 30 * 1000;
 let headCache: { at: number; value: IndexHead } | undefined;
 
 /**
@@ -220,7 +267,8 @@ let headCache: { at: number; value: IndexHead } | undefined;
  */
 export async function fetchIndexHead(opts: { timeoutMs?: number } = {}): Promise<IndexHead> {
   const now = Date.now();
-  if (headCache && now - headCache.at < HEAD_TTL_MS) return headCache.value;
+  const ttl = headCache?.value.failed ? FAILED_HEAD_TTL_MS : HEAD_TTL_MS;
+  if (headCache && now - headCache.at < ttl) return headCache.value;
 
   const gql = '{ _meta { block { number } } '
     + 'enrichedOrderFilleds(orderBy: timestamp, orderDirection: desc, first: 1) { timestamp } }';
@@ -232,14 +280,19 @@ export async function fetchIndexHead(opts: { timeoutMs?: number } = {}): Promise
       enrichedOrderFilleds?: { timestamp?: string }[];
     }>(JSON.stringify({ query: gql }), opts.timeoutMs ?? 15_000);
 
-    const seconds = Number(data.enrichedOrderFilleds?.[0]?.timestamp);
+    const rawSeconds = data.enrichedOrderFilleds?.[0]?.timestamp;
+    const seconds = typeof rawSeconds === 'string' && /^\d+$/.test(rawSeconds)
+      ? Number(rawSeconds)
+      : undefined;
+    const date = seconds !== undefined && Number.isSafeInteger(seconds) && seconds > 0
+      ? new Date(seconds * 1000)
+      : undefined;
+    if (!date || Number.isNaN(date.getTime())) throw new Error('trade index returned no usable head time');
+
+    const rawBlock = data._meta?.block?.number;
     value = {
-      // Checked before coercing, because `Number(null)` is 0 and a head of zero
-      // would mark every market ever as beyond the index.
-      lastTradeAt: Number.isFinite(seconds) && seconds > 0
-        ? new Date(seconds * 1000).toISOString()
-        : undefined,
-      block: data._meta?.block?.number,
+      lastTradeAt: date.toISOString(),
+      block: Number.isSafeInteger(rawBlock) && (rawBlock ?? -1) >= 0 ? rawBlock : undefined,
     };
   } catch (err) {
     value = { failed: redactMessage((err as Error).message ?? String(err)).slice(0, 160) };
@@ -268,25 +321,36 @@ export interface WalletPosition extends TokenPosition {
 export async function fetchWalletPositions(
   address: string,
   opts: { limit?: number; floor?: number; timeoutMs?: number } = {},
-): Promise<{ positions: WalletPosition[]; floor: number; truncated: boolean; failed?: string }> {
+): Promise<{ positions: WalletPosition[]; floor: number; truncated: boolean; dropped: number; failed?: string }> {
   const { limit = 60, timeoutMs = 25_000 } = opts;
 
   const who = safeAddress(address);
-  if (!who) return { positions: [], floor: 0, truncated: false, failed: 'malformed address' };
+  if (!who) {
+    return { positions: [], floor: 0, truncated: false, dropped: 0, failed: 'malformed address' };
+  }
+
+  const requested = Number.isFinite(limit)
+    ? Math.min(Math.max(1, Math.floor(limit)), 200)
+    : 60;
+  if (opts.floor !== undefined && (!Number.isFinite(opts.floor) || opts.floor < 0)) {
+    return { positions: [], floor: 0, truncated: false, dropped: 0, failed: 'invalid position floor' };
+  }
 
   const ladder = opts.floor === undefined ? [1, 100, 1_000] : [opts.floor];
   let lastError = 'subgraph did not answer';
 
   for (const floor of ladder) {
-    const units = (BigInt(Math.max(0, Math.floor(floor))) * BigInt(UNIT)).toString();
-    const gql = `{ marketPositions(where: {user: "${who}", netQuantity_gt: "${units}"}, orderBy: netQuantity, orderDirection: desc, first: ${Math.min(Math.max(1, Math.floor(limit)), 200)}) { id quantityBought quantitySold netQuantity valueBought netValue } }`;
+    const effectiveFloor = Math.max(0, Math.floor(floor));
+    const units = (BigInt(effectiveFloor) * BigInt(UNIT)).toString();
+    const gql = `{ marketPositions(where: {user: "${who}", netQuantity_gt: "${units}"}, orderBy: netQuantity, orderDirection: desc, first: ${requested}) { id quantityBought quantitySold netQuantity valueBought netValue } }`;
 
     try {
       const data = await query<{ marketPositions?: (RawPosition & { id?: string })[] }>(
         JSON.stringify({ query: gql }),
         timeoutMs,
       );
-      const rows = data.marketPositions ?? [];
+      if (!Array.isArray(data.marketPositions)) throw new Error('subgraph returned no position list');
+      const rows = data.marketPositions;
       const positions: WalletPosition[] = [];
 
       for (const raw of rows) {
@@ -298,14 +362,27 @@ export async function fetchWalletPositions(
         if (base && tokenId) positions.push({ ...base, tokenId });
       }
 
-      return { positions, floor, truncated: rows.length >= limit };
+      const dropped = rows.length - positions.length;
+      if (rows.length > 0 && positions.length === 0) {
+        throw new Error('subgraph returned no usable wallet positions');
+      }
+      if (new Set(positions.map((position) => position.tokenId)).size !== positions.length) {
+        throw new Error('subgraph returned duplicate wallet tokens');
+      }
+
+      return {
+        positions,
+        floor: effectiveFloor,
+        truncated: rows.length >= requested,
+        dropped,
+      };
     } catch (err) {
       lastError = redactMessage((err as Error).message ?? String(err));
       if (!/timeout|timed out|statement/i.test(lastError)) break;
     }
   }
 
-  return { positions: [], floor: 0, truncated: false, failed: lastError.slice(0, 160) };
+  return { positions: [], floor: 0, truncated: false, dropped: 0, failed: lastError.slice(0, 160) };
 }
 
 /** How a condition paid out, straight from the chain rather than from prices. */
@@ -314,7 +391,6 @@ export interface Payout {
   /** Numerators, index aligned with outcomes. Undefined until it resolves. */
   numerators?: number[];
   denominator?: number;
-  resolvedAt?: number;
 }
 
 /**
@@ -332,10 +408,10 @@ export interface Payout {
 export async function fetchTokenPayouts(
   tokenIds: string[],
   opts: { timeoutMs?: number } = {},
-): Promise<{ byToken: Map<string, Payout>; asked: number; found: number; failed?: string }> {
+): Promise<{ byToken: Map<string, Payout>; asked: number; found: number; invalid: number; failed?: string }> {
   const clean = [...new Set(tokenIds.map((t) => safeTokenId(t)).filter((t): t is string => !!t))];
   const byToken = new Map<string, Payout>();
-  if (clean.length === 0) return { byToken, asked: 0, found: 0 };
+  if (clean.length === 0) return { byToken, asked: 0, found: 0, invalid: 0 };
 
   const gql = `{ marketDatas(where: {id_in: [${clean.map((t) => `"${t}"`).join(',')}]}, first: ${Math.min(clean.length, 1000)}) { id condition { id payoutNumerators payoutDenominator resolutionTimestamp } } }`;
 
@@ -352,33 +428,62 @@ export async function fetchTokenPayouts(
       }[];
     }>(JSON.stringify({ query: gql }), opts.timeoutMs ?? 25_000);
 
-    for (const row of data.marketDatas ?? []) {
+    if (!Array.isArray(data.marketDatas)) throw new Error('subgraph returned no payout list');
+
+    let invalid = 0;
+    for (const row of data.marketDatas) {
       const token = safeTokenId(row.id);
       const conditionId = safeHash(row.condition?.id);
-      if (!token || !conditionId) continue;
+      if (!token || !conditionId) {
+        invalid += 1;
+        continue;
+      }
+      if (byToken.has(token)) throw new Error('subgraph returned a duplicate payout token');
 
       const nums = row.condition?.payoutNumerators;
       const den = row.condition?.payoutDenominator;
+      const parsedNums = Array.isArray(nums) && nums.length > 0
+        ? nums.map((n) => (/^\d+$/.test(n) ? Number(n) : Number.NaN))
+        : undefined;
+      const parsedDen = typeof den === 'string' && /^\d+$/.test(den) ? Number(den) : undefined;
+      const numeratorTotal = parsedNums?.reduce((sum, n) => sum + n, 0);
+      const validPayout = parsedNums?.every((n) => Number.isSafeInteger(n) && n >= 0)
+        && Number.isSafeInteger(parsedDen) && (parsedDen ?? 0) > 0
+        && parsedNums.every((n) => n <= parsedDen!)
+        && Number.isSafeInteger(numeratorTotal) && numeratorTotal === parsedDen;
+      const rawResolvedAt = row.condition?.resolutionTimestamp;
+      const resolvedAt = typeof rawResolvedAt === 'string' && /^\d+$/.test(rawResolvedAt)
+        ? Number(rawResolvedAt)
+        : undefined;
+
+      if ((nums !== null && nums !== undefined && !validPayout)
+        || (rawResolvedAt !== null && rawResolvedAt !== undefined
+          && (!Number.isSafeInteger(resolvedAt) || (resolvedAt ?? 0) <= 0))
+        || (Number.isSafeInteger(resolvedAt) && (resolvedAt ?? 0) > 0 && !validPayout)) {
+        invalid += 1;
+      }
 
       byToken.set(token, {
         conditionId,
         // Present only when it actually resolved. An unresolved condition has
         // no payout, and coercing that to zero would report every open
         // position as a loss.
-        numerators: Array.isArray(nums) && nums.length > 0 ? nums.map((n) => Number(n)) : undefined,
-        denominator: den ? Number(den) : undefined,
-        resolvedAt: row.condition?.resolutionTimestamp
-          ? Number(row.condition.resolutionTimestamp)
-          : undefined,
+        numerators: validPayout ? parsedNums : undefined,
+        denominator: validPayout ? parsedDen : undefined,
       });
     }
 
-    return { byToken, asked: clean.length, found: byToken.size };
+    return { byToken, asked: clean.length, found: byToken.size, invalid };
   } catch (err) {
+    // A response rejected halfway through is not a partial success. Returning
+    // the rows visited before the malformed one would put totals over an
+    // arbitrary prefix while the result merely says the request failed.
+    byToken.clear();
     return {
       byToken,
       asked: clean.length,
       found: 0,
+      invalid: 0,
       failed: redactMessage((err as Error).message ?? String(err)).slice(0, 160),
     };
   }

@@ -3,20 +3,21 @@
  * sources actually answered.
  */
 
-import { fetchDisplayNames, fetchHolders, sideForIndex } from '../sources/dataapi.js';
+import { fetchDisplayNames, fetchHolders } from '../sources/dataapi.js';
 import { fetchMarketsByCondition } from '../sources/gamma.js';
 import { buildLedger, type WalletLedger } from './wallet.js';
 import { chainNote } from '../sources/chain.js';
 import {
-  fetchIndexHead, fetchTokenPayouts, fetchTokenPositions, fetchWalletPositions,
+  fetchIndexHead, fetchTokenPayouts, fetchTokenPositions, fetchWalletPositions, type IndexHead,
 } from '../sources/subgraph.js';
 import {
   caveatsFor, concentration, observableSide, repeatPlayers, repeatWinners, tradeConcentration,
-  winningSide, type WinningOutcome,
+  sideForIndex, winningSide, type WinningOutcome,
 } from './capture.js';
 import { disputeWeight, parseDispute, parseMarketDate } from './dispute.js';
+import { redactMessage, safeAddress } from './safe.js';
 import type {
-  Assessment, EvidenceTier, Holder, Market, Regular, RepeatPlayer, Side, Winner,
+  Assessment, EvidenceTier, Holder, Market, Regular, RepeatPlayer, Side, TradeIndexCoverage, Winner,
 } from '../types.js';
 
 /** How many holders to request per market. The API pages beyond this. */
@@ -41,24 +42,36 @@ export interface AssessOptions {
   winnerNames?: boolean;
 }
 
-/**
- * Did this market close after the trade index stops?
- *
- * Returns the head time when it did, and undefined when the reading is covered
- * or when the head itself could not be read. An unknown head produces no claim
- * in either direction, because "we do not know how far the index reaches" is
- * not the same as "it reaches this market".
- */
-async function beyondTradeIndex(market: Market): Promise<string | undefined> {
-  const head = await fetchIndexHead().catch(() => undefined);
-  if (!head?.lastTradeAt) return undefined;
+/** Classify whether an empty trade query is evidence of an empty winner set. */
+export function classifyTradeIndexCoverage(
+  market: Market,
+  head: IndexHead,
+): TradeIndexCoverage {
+  if (head.failed) return { status: 'unknown', reason: `trade index head could not be read: ${head.failed}` };
+  if (!head.lastTradeAt) return { status: 'unknown', reason: 'trade index returned no head time' };
 
   const closed = parseMarketDate(market.closedTime)
     ?? parseMarketDate(market.umaEndDate)
     ?? parseMarketDate(market.endDate);
-  if (!closed) return undefined;
+  if (!closed) return { status: 'unknown', reason: 'market has no usable close time' };
 
-  return closed.getTime() > Date.parse(head.lastTradeAt) ? head.lastTradeAt : undefined;
+  const headMs = Date.parse(head.lastTradeAt);
+  if (!Number.isFinite(headMs)) return { status: 'unknown', reason: 'trade index returned an invalid head time' };
+
+  return closed.getTime() > headMs
+    ? { status: 'beyond', lastTradeAt: head.lastTradeAt }
+    : { status: 'covered', lastTradeAt: head.lastTradeAt };
+}
+
+async function readTradeIndexCoverage(market: Market): Promise<TradeIndexCoverage> {
+  try {
+    return classifyTradeIndexCoverage(market, await fetchIndexHead());
+  } catch (err) {
+    return {
+      status: 'unknown',
+      reason: `trade index head could not be read: ${redactMessage((err as Error).message ?? String(err))}`,
+    };
+  }
 }
 
 /** Which CLOB token id represents a side, using the market's own labels. */
@@ -77,7 +90,13 @@ export function tokenIdForSide(market: Market, side: Side): string | undefined {
  * that says so is useful, and a crash is not.
  */
 export async function assess(market: Market, opts: AssessOptions = {}): Promise<Assessment> {
-  const { holderLimit = HOLDER_LIMIT, topN = 5, winnerLimit = 20 } = opts;
+  const holderLimit = Number.isFinite(opts.holderLimit)
+    ? Math.min(500, Math.max(1, Math.floor(opts.holderLimit!)))
+    : HOLDER_LIMIT;
+  const topN = Number.isFinite(opts.topN) ? Math.max(1, Math.floor(opts.topN!)) : 5;
+  const winnerLimit = Number.isFinite(opts.winnerLimit)
+    ? Math.min(100, Math.max(1, Math.floor(opts.winnerLimit!)))
+    : 20;
 
   const dispute = parseDispute(market);
   const observable = observableSide(market);
@@ -106,36 +125,47 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
   let winnersTruncated = false;
   let namesFailed: number | undefined;
   let beyondIndex: string | undefined;
+  let coverageUnknown: string | undefined;
+  let tradeIndexCoverage: TradeIndexCoverage | undefined;
+  let winnersDropped = 0;
+  let tradesRead = false;
 
   if (opts.winners && won && winToken) {
-    const scan = await fetchTokenPositions(winToken, { limit: winnerLimit });
-    if (scan.failed) {
-      winnersFailed = scan.failed;
+    tradeIndexCoverage = await readTradeIndexCoverage(market);
+    if (tradeIndexCoverage.status === 'beyond') {
+      beyondIndex = tradeIndexCoverage.lastTradeAt;
+    } else if (tradeIndexCoverage.status === 'unknown') {
+      coverageUnknown = tradeIndexCoverage.reason;
     } else {
-      // An empty answer is the ambiguous one. Only then is it worth a request
-      // to find out whether the index even reaches this market.
-      if (scan.positions.length === 0) beyondIndex = await beyondTradeIndex(market);
+      const scan = await fetchTokenPositions(winToken, { limit: winnerLimit });
+      if (scan.failed) {
+        winnersFailed = scan.failed;
+        tradeIndexCoverage = { status: 'unknown', reason: `winning-side query failed: ${scan.failed}` };
+      } else {
+        winnersDropped = scan.dropped;
+        tradesRead = true;
+        winners = scan.positions.map((p) => ({
+          address: p.address, bought: p.bought, net: p.net, spent: p.spent, netSpent: p.netSpent,
+        }));
 
-      winners = scan.positions.map((p) => ({
-        address: p.address, bought: p.bought, net: p.net, spent: p.spent, netSpent: p.netSpent,
-      }));
+        if (opts.winnerNames && winners.length > 0) {
+          const named = await fetchDisplayNames(winners.map((w) => w.address));
+          winners = winners.map((w) => {
+            const name = named.byAddress.get(w.address);
+            return name ? { ...w, name } : w;
+          });
+          // Distinguishes "these wallets are unnamed" from "we could not ask".
+          if (named.failed > 0) namesFailed = named.failed;
+        }
 
-      if (opts.winnerNames && winners.length > 0) {
-        const named = await fetchDisplayNames(winners.map((w) => w.address));
-        winners = winners.map((w) => {
-          const name = named.byAddress.get(w.address);
-          return name ? { ...w, name } : w;
-        });
-        // Distinguishes "these wallets are unnamed" from "we could not ask".
-        if (named.failed > 0) namesFailed = named.failed;
+        winnerConc = tradeConcentration(winners, won, scan.floor, topN);
+        winnerFloor = scan.floor;
+        winnersTruncated = scan.truncated;
       }
-
-      winnerConc = tradeConcentration(winners, won, scan.floor, topN);
-      winnerFloor = scan.floor;
-      winnersTruncated = scan.truncated;
     }
   } else if (opts.winners && won && !winToken) {
     winnersFailed = 'market has no usable token id';
+    tradeIndexCoverage = { status: 'unknown', reason: winnersFailed };
   }
 
   // What was read, not what was configured. Deriving the tier from an
@@ -144,28 +174,44 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
   // `actors` stayed empty and no oracle request was ever made. The tier is the
   // one claim this tool makes about its own evidence, so it is now assembled
   // only from sources that answered.
-  const tier: EvidenceTier = winnerConc ? 'positions+trades' : 'positions';
+  const tier: EvidenceTier = !holdersFailed && tradesRead
+    ? 'positions+trades'
+    : !holdersFailed
+      ? 'positions'
+      : tradesRead
+        ? 'trades'
+        : 'catalogue';
+
+  const holderCount = observable
+    ? holders.filter((h) => h.side === observable.side).length
+    : holders.length;
 
   const caveats = caveatsFor({
-    holderCount: holders.length,
+    holderCount,
     // The endpoint groups by outcome token, so a full page on either side
     // means there is more book than we were shown.
-    holdersTruncated: holders.length >= holderLimit,
+    holdersTruncated: observable
+      ? holderCount >= holderLimit
+      : ['YES', 'NO'].some((side) => holders.filter((h) => h.side === side).length >= holderLimit),
     settled: observable?.settled ?? false,
     winnersFailed,
     winnerFloor,
     winnersTruncated,
     beyondIndex,
+    coverageUnknown,
   });
 
   if (namesFailed) {
     caveats.push(`${namesFailed} winner names could not be looked up and show as addresses`);
   }
+  if (winnersDropped > 0) {
+    caveats.push(`${winnersDropped} malformed winning positions were omitted`);
+  }
 
   // Ahead of the reading-specific caveats, because it applies to all of them.
   caveats.unshift(chainNote());
   if (holdersFailed) caveats.unshift('holder lookup failed for this market');
-  if (!observable) caveats.push('no prices: cannot tell which side is which');
+  if (!observable) caveats.push('no usable binary price pair: no single side can be identified');
 
   return {
     market,
@@ -175,6 +221,7 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
     winners,
     tier,
     ...(beyondIndex ? { tradeIndexEndsAt: beyondIndex } : {}),
+    ...(tradeIndexCoverage ? { tradeIndexCoverage } : {}),
     caveats,
     pool: market.volume,
     fetchedAt: new Date().toISOString(),
@@ -271,6 +318,8 @@ export interface RegularScan {
    * described as markets nobody won.
    */
   beyondIndex: number;
+  /** Empty answers whose index coverage could not be established. */
+  coverageUnknown: number;
   /** ISO time of the last indexed trade, when it could be read. */
   indexHead?: string;
   /** Smallest and largest floor any market needed, in tokens. */
@@ -289,6 +338,8 @@ export interface RegularScan {
   namesAsked: number;
   /** Names that were asked for and could not be read. */
   namesFailed: number;
+  /** Malformed position rows omitted across the markets that answered. */
+  positionsDropped: number;
 }
 
 /**
@@ -321,7 +372,15 @@ export async function tallyRegulars(
   let undecided = 0;
   let empty = 0;
   let beyond = 0;
+  let coverageUnknown = 0;
+  let positionsDropped = 0;
   let seen = 0;
+  let indexHead: IndexHead | undefined;
+
+  const coverageFor = async (market: Market): Promise<TradeIndexCoverage> => {
+    indexHead ??= await fetchIndexHead().catch((err: Error) => ({ failed: redactMessage(err.message) }));
+    return classifyTradeIndexCoverage(market, indexHead);
+  };
 
   for (const market of markets) {
     seen += 1;
@@ -336,13 +395,24 @@ export async function tallyRegulars(
       continue;
     }
 
+    const coverage = await coverageFor(market);
+    if (coverage.status === 'beyond') {
+      beyond += 1;
+      continue;
+    }
+    if (coverage.status === 'unknown') {
+      coverageUnknown += 1;
+      continue;
+    }
+
     const scan = await fetchTokenPositions(token, { limit: winnerLimit });
     if (scan.failed) {
       marketsFailed += 1;
       continue;
     }
 
-    floors.push(scan.floor);
+    positionsDropped += scan.dropped;
+
     const winners: Winner[] = scan.positions.map((p) => ({
       address: p.address, bought: p.bought, net: p.net, spent: p.spent, netSpent: p.netSpent,
     }));
@@ -354,10 +424,12 @@ export async function tallyRegulars(
     // it stays out of the denominator rather than counting against everyone.
     // Which of the two kinds of nothing this is decides what gets reported.
     if (held.length === 0) {
-      if (await beyondTradeIndex(market)) beyond += 1;
-      else empty += 1;
+      floors.push(scan.floor);
+      empty += 1;
       continue;
     }
+
+    floors.push(scan.floor);
 
     // The slug is what makes a row checkable with `recuse market`. Condition id
     // is the fallback, since a market without a slug still has one of those.
@@ -381,24 +453,26 @@ export async function tallyRegulars(
       const name = named?.byAddress.get(r.address);
       return name ? { ...r, name } : r;
     }),
-    marketsRead: outcomes.length + empty + beyond,
+    marketsRead: outcomes.length + empty,
     marketsScored: outcomes.length,
     marketsFailed,
     undecided,
     empty,
     beyondIndex: beyond,
-    indexHead: (await fetchIndexHead().catch(() => undefined))?.lastTradeAt,
+    coverageUnknown,
+    indexHead: indexHead?.lastTradeAt,
     floorLow,
     floorHigh,
     floorRaised: floors.filter((f) => f > floorLow).length,
     wallets: wallets.size,
     namesAsked: named ? asked.length : 0,
     namesFailed: named?.failed ?? 0,
+    positionsDropped,
   };
 }
 
 /**
- * Everything one wallet did, joined across three sources.
+ * Every position one wallet carried into settlement, joined across three sources.
  *
  * Subgraph for what they bought, subgraph again for how each condition paid out
  * on chain, and Gamma for the question text, the dispute history and, critically,
@@ -409,11 +483,14 @@ export async function assessWallet(
   address: string,
   opts: { limit?: number; floor?: number } = {},
 ): Promise<WalletLedger & { floor: number; truncated: boolean }> {
-  const scan = await fetchWalletPositions(address, opts);
+  const who = safeAddress(address);
+  if (!who) throw new Error('wallet address must be a 0x-prefixed 20-byte address');
+
+  const scan = await fetchWalletPositions(who, opts);
 
   if (scan.failed) {
     return {
-      address, entries: [], won: 0, lost: 0, split: 0, open: 0,
+      address: who, entries: [], won: 0, lost: 0, split: 0, open: 0,
       gain: 0, contestedGain: 0, contested: 0,
       caveats: [`positions could not be read: ${scan.failed}`],
       floor: 0, truncated: false,
@@ -422,35 +499,68 @@ export async function assessWallet(
 
   // One request, for the header of the whole view. Best effort: a wallet with
   // no name is the common case and is not worth failing a ledger over.
-  const named = await fetchDisplayNames([address]).catch(() => undefined);
+  const [named, indexHead] = await Promise.all([
+    fetchDisplayNames([who]).catch(() => undefined),
+    fetchIndexHead().catch((err: Error): IndexHead => ({ failed: redactMessage(err.message) })),
+  ]);
 
   const payoutScan = await fetchTokenPayouts(scan.positions.map((p) => p.tokenId));
   const conditions = [...new Set([...payoutScan.byToken.values()].map((p) => p.conditionId))];
-  const { markets, missing } = await fetchMarketsByCondition(conditions);
+  const { markets, missing, failed: catalogueFailures } = await fetchMarketsByCondition(conditions);
 
   const ledger = buildLedger({
-    address,
+    address: who,
     positions: scan.positions,
     payouts: payoutScan.byToken,
     markets,
   });
 
+  const tradeIndex: WalletLedger['tradeIndex'] = indexHead.lastTradeAt
+    ? {
+      status: 'known',
+      lastTradeAt: indexHead.lastTradeAt,
+      ...(indexHead.block === undefined ? {} : { block: indexHead.block }),
+    }
+    : {
+      status: 'unknown',
+      reason: indexHead.failed ?? 'trade index returned no head time',
+    };
+  ledger.tradeIndex = tradeIndex;
+  ledger.caveats.unshift(
+    tradeIndex.status === 'known'
+      ? `trade history ends at ${tradeIndex.lastTradeAt.slice(0, 10)}; later trades are absent`
+      : `trade history recency is unknown: ${tradeIndex.reason}`,
+  );
+
   if (payoutScan.failed) {
     ledger.caveats.unshift(`payouts could not be read: ${payoutScan.failed}`);
   }
+  if (payoutScan.invalid > 0) {
+    ledger.caveats.push(`${payoutScan.invalid} malformed payout records were treated as unresolved`);
+  }
   if (missing.length > 0) {
-    ledger.caveats.push(`${missing.length} markets were not in Gamma and are not counted`);
+    ledger.caveats.push(
+      catalogueFailures > 0
+        ? `${missing.length} markets could not be found or read in Gamma and are not counted`
+        : `${missing.length} markets were not in Gamma and are not counted`,
+    );
+  }
+  if (catalogueFailures > 0) {
+    ledger.caveats.push(`${catalogueFailures} Gamma catalogue requests failed`);
   }
   if (scan.floor > 0) {
-    ledger.caveats.push(`positions under ${scan.floor} tokens were not requested`);
+    ledger.caveats.push(`positions at or below ${scan.floor} tokens were not requested`);
   }
   if (scan.truncated) {
     ledger.caveats.push('more positions exist than were requested, use --limit');
   }
+  if (scan.dropped > 0) {
+    ledger.caveats.push(`${scan.dropped} malformed positions were omitted`);
+  }
 
   return {
     ...ledger,
-    name: named?.byAddress.get(address.trim().toLowerCase()),
+    name: named?.byAddress.get(who),
     floor: scan.floor,
     truncated: scan.truncated,
   };

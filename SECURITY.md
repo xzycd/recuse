@@ -6,7 +6,7 @@
 
 It writes to `~/.recuse` and nowhere else. That directory is created 0700 and every file in it 0600: the update cache, the watchlist, the last snapshot of each watched market, and the append only event log. A watchlist is a statement about what someone is trading, so it is not left world readable.
 
-Nothing is ever spawned. There is no `--exec`, no shell hook and no `child_process` import anywhere in the tool. `recuse watch --json` emits one event per line, so piping into a shell loop gives anyone the same power without this program having that capability at all.
+The runtime CLI never spawns a process. There is no `--exec` or shell hook. The repository's build scripts invoke the local TypeScript compiler, but installed commands do not import `child_process`. `recuse watch --json` emits one event per line, so piping into a shell loop gives anyone the same power without the runtime having that capability.
 
 ## Threat model
 
@@ -28,7 +28,7 @@ Every string from every source is filtered on the way in, in the source module, 
 
 ## The MCP surface, and the one thing the filter does not cover
 
-`recuse serve --mcp` reads stdin and writes stdout. It opens no socket, binds no port and accepts no connection, so there is nothing to authenticate and nothing reachable from another machine. All five tools are read only: none writes a file, touches the watchlist, or reads the event log.
+`recuse serve --mcp` reads stdin and writes stdout. It opens no socket, binds no port and accepts no connection, so there is nothing to authenticate and nothing reachable from another machine. All six tools are read only: none writes a file, touches the watchlist, or reads the event log. Each message is capped at 1MB, decoded across byte boundaries and validated as a JSON-RPC object before dispatch.
 
 The new exposure is not the transport. It is that a display name now lands in a language model's context instead of a terminal's.
 
@@ -38,7 +38,7 @@ So it is stated rather than defended against:
 
 **Treat every string in an MCP payload as attacker supplied.** Market questions, display names and slugs are all chosen by someone else. The addresses, counts and amounts are computed here; the prose is not.
 
-The structural mitigation is that nothing in this tool acts on what it reads. There is no write tool, no order, no key, and no `child_process` anywhere in the program, so the worst available outcome is a wrong answer rather than an action. A wrong answer still matters, which is why display names never travel without the address they belong to, on this surface as on every other.
+The structural mitigation is that nothing in this tool acts on what it reads. There is no write tool, no order, no key, and no process execution in the runtime, so the worst available outcome is a wrong answer rather than an action. A wrong answer still matters, which is why display names never travel without the address they belong to, on this surface as on every other.
 
 ## Other measures
 
@@ -52,7 +52,11 @@ The structural mitigation is that nothing in this tool acts on what it reads. Th
 
 **Webhook URLs are checked before the loop starts**, not on the first event, and any credential in one is removed from error output. A Telegram webhook carries a bot token in its path, and a watcher that runs all night only to fail on delivery would otherwise print it.
 
-**State is written to a temporary file and renamed.** A watcher runs for days and will eventually be killed mid-write. A truncated snapshot file would silently re-baseline every market in it, which is a correctness failure rather than a security one, but the fix is the same.
+**State is written to an exclusive temporary file, flushed and renamed.** The directory and final file modes are repaired on every write. Corrupt state stops the command instead of being mistaken for a first run and overwritten. Events are flushed before the watcher checkpoint, so a crash can produce a visible duplicate but cannot silently mark an unrecorded event as seen.
+
+**One watcher owns a state directory.** An exclusive lease prevents overlapping cron runs or two daemons from comparing and writing the same checkpoint. A lease whose process no longer exists is reclaimed.
+
+**CI installs without lifecycle scripts and pins every action to a commit.** The maintained Node 22 and 24 LTS lines are tested, production dependencies are audited, and Dependabot watches both npm and GitHub Actions updates.
 
 **Nothing is ever installed.** `recuse update` checks the registry and prints the install command. A CLI that updates itself runs whatever is at that name on the registry the next time the name changes hands or a release is compromised.
 
@@ -66,6 +70,6 @@ The upstream APIs are trusted for truth but not for safety. If Gamma reports a d
 
 ## Reporting something
 
-Open an issue. If it is something that should not be public first, say so in the issue without the detail and it will be moved somewhere private.
+Use [GitHub's private vulnerability reporting form](https://github.com/xzycd/recuse/security/advisories/new) for anything sensitive. It reaches the maintainer without putting details in a public issue. Use a normal issue only when the report is safe to discuss in public.
 
 Two runtime dependencies, ink and react, both kept current.

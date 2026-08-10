@@ -1,5 +1,5 @@
 /**
- * One wallet's record across the markets it traded.
+ * One wallet's positions carried into settlement across the markets it traded.
  *
  * Pure. Given positions from the subgraph, payouts from the chain, and markets
  * from Gamma, this works out which side each position was on and what it made.
@@ -34,8 +34,8 @@ export interface WalletEntry {
   net: number;
   /** USD paid for them, net of anything sold back. */
   cost: number;
-  /** USD the position paid out. Zero on a loser, net on a winner, in between on a split. */
-  proceeds: number;
+  /** USD paid out. Zero on a loser, net on a winner, absent while unresolved. */
+  proceeds?: number;
   /** proceeds minus cost. Undefined while the market is unresolved. */
   gain?: number;
   /** Dollars per token this side settled at, in [0, 1]. Undefined if unresolved. */
@@ -62,6 +62,10 @@ export interface WalletLedger {
   contestedGain: number;
   contested: number;
   caveats: string[];
+  /** How far the trade source behind this position record had indexed. */
+  tradeIndex?:
+    | { status: 'known'; lastTradeAt: string; block?: number }
+    | { status: 'unknown'; reason: string };
 }
 
 export interface PayoutLike {
@@ -99,10 +103,22 @@ export function indexOfToken(market: Market, tokenId: string): number | undefine
 export function payoutFor(payout: PayoutLike | undefined, index: number): number | undefined {
   const nums = payout?.numerators;
   const den = payout?.denominator;
-  if (!nums || nums.length === 0 || !den || den <= 0) return undefined;
+  if (
+    !nums || nums.length === 0 || !Number.isInteger(index) || index < 0
+    || typeof den !== 'number' || !Number.isSafeInteger(den) || den <= 0
+  ) return undefined;
+
+  const total = nums.reduce((sum, value) => sum + value, 0);
+  if (
+    !nums.every((value) => Number.isSafeInteger(value) && value >= 0 && value <= den)
+    || !Number.isSafeInteger(total) || total !== den
+  ) return undefined;
 
   const numerator = nums[index];
-  if (numerator === undefined || !Number.isFinite(numerator)) return undefined;
+  if (
+    typeof numerator !== 'number' || !Number.isSafeInteger(numerator)
+    || numerator < 0 || numerator > den
+  ) return undefined;
 
   return numerator / den;
 }
@@ -132,7 +148,7 @@ export function buildLedger(input: LedgerInput): WalletLedger {
 
     const fraction = payoutFor(payout, index);
     const dispute = parseDispute(market);
-    const proceeds = fraction === undefined ? 0 : position.net * fraction;
+    const proceeds = fraction === undefined ? undefined : position.net * fraction;
 
     entries.push({
       conditionId: market.conditionId,
@@ -144,8 +160,7 @@ export function buildLedger(input: LedgerInput): WalletLedger {
       steps: dispute.steps,
       net: position.net,
       cost: position.netSpent,
-      proceeds,
-      gain: fraction === undefined ? undefined : proceeds - position.netSpent,
+      ...(proceeds === undefined ? {} : { proceeds, gain: proceeds - position.netSpent }),
       payout: fraction,
       resolved: fraction !== undefined,
     });

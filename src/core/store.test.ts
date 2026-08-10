@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  addToWatchlist, appendEvents, paths, readEventLog, readEvents, readSeen, readWatchlist,
+  acquireWatchLock, addToWatchlist, appendEvents, paths, readEventLog, readEvents, readSeen, readWatchlist,
   removeFromWatchlist, writeSeen,
 } from './store.js';
 import type { Seen, WatchEvent } from './watch.js';
@@ -68,15 +68,56 @@ describe('watchlist', () => {
     expect((await readWatchlist()).markets[0]).not.toContain('');
   });
 
-  it('survives a corrupt file by starting over rather than throwing', async () => {
+  it('refuses to silently replace a corrupt watchlist with an empty one', async () => {
     await writeFile(paths.watchlist(), 'not json at all');
-    await expect(readWatchlist()).resolves.toEqual({ markets: [] });
+    await expect(readWatchlist()).rejects.toThrow(/not valid JSON/);
   });
 
   it('creates its files unreadable by anyone else', async () => {
     await addToWatchlist('zelenskyy-suit');
     const mode = (await stat(paths.watchlist())).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+
+  it('repairs broad permissions on an existing state file', async () => {
+    await writeFile(paths.watchlist(), JSON.stringify({ markets: [] }), { mode: 0o644 });
+    await chmod(paths.watchlist(), 0o644);
+    await addToWatchlist('zelenskyy-suit');
+    expect((await stat(paths.watchlist())).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe('watch lease', () => {
+  it('allows only one watcher per state directory and releases cleanly', async () => {
+    const release = await acquireWatchLock();
+    await expect(acquireWatchLock()).rejects.toThrow(/already running/);
+    await release();
+
+    const releaseAgain = await acquireWatchLock();
+    await releaseAgain();
+  });
+
+  it('reclaims a lease whose process is gone', async () => {
+    await writeFile(paths.watchLock(), JSON.stringify({ pid: 99_999_999, nonce: 'stale' }));
+    const release = await acquireWatchLock();
+    await release();
+  });
+
+  it('fails closed on a malformed lease instead of deleting it', async () => {
+    await writeFile(paths.watchLock(), JSON.stringify({ pid: 'not-a-process', nonce: 'bad' }));
+    await expect(acquireWatchLock()).rejects.toThrow(/unreadable/);
+    await expect(readFile(paths.watchLock(), 'utf8')).resolves.toContain('not-a-process');
+  });
+
+  it('serialises two processes racing to reclaim the same stale lease', async () => {
+    await writeFile(paths.watchLock(), JSON.stringify({ pid: 99_999_999, nonce: 'stale' }));
+    const attempts = await Promise.allSettled([acquireWatchLock(), acquireWatchLock()]);
+    const acquired = attempts.filter(
+      (attempt): attempt is PromiseFulfilledResult<() => Promise<void>> => attempt.status === 'fulfilled',
+    );
+    expect(acquired).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1);
+    await acquired[0]!.value();
   });
 });
 
@@ -90,11 +131,9 @@ describe('seen state', () => {
     expect(back.markets[id]?.steps).toEqual(['proposed']);
   });
 
-  it('drops a key that is not a condition id', async () => {
-    // These keys are compared against ids from Gamma, so a hand edited or
-    // corrupted one is dropped rather than carried into a comparison.
+  it('refuses a corrupt key instead of silently losing that baseline', async () => {
     await writeFile(paths.seen(), JSON.stringify({ markets: { 'not-an-id': seen('x') } }));
-    expect(Object.keys((await readSeen()).markets)).toEqual([]);
+    await expect(readSeen()).rejects.toThrow(/invalid market record/);
   });
 
   it('leaves no temporary file behind, so a rename actually happened', async () => {
@@ -154,6 +193,23 @@ describe('event log', () => {
     const { events, skipped } = await readEvents();
     expect(events).toHaveLength(2);
     expect(skipped).toBe(1);
+  });
+
+  it('counts parseable but structurally invalid events as unreadable', async () => {
+    await appendEvents([event()]);
+    await writeFile(paths.events(), '{"kind":"disputed"}\n', { flag: 'a' });
+    const result = await readEventLog();
+    expect(result.events).toHaveLength(1);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('sanitises persisted remote text before rendering it again', async () => {
+    await appendEvents([event()]);
+    const body = await readFile(paths.events(), 'utf8');
+    const raw = JSON.parse(body.trim());
+    raw.question = 'safe\u001b[2Jforged';
+    await writeFile(paths.events(), `${JSON.stringify(raw)}\n`);
+    expect((await readEventLog()).events[0]?.question).toBe('safe[2Jforged');
   });
 
   it('writes nothing at all when there is nothing to write', async () => {
