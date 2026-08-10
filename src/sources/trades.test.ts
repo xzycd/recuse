@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { REACHABLE, toTrade } from './trades.js';
+import { toTrade } from './trades.js';
 
 const ADDRESS = '0x950ea3d54a52dca7ec54e7a0338812450268f8e5';
 const TOKEN = '76533108781962275310651165149634079251899733930834190485860627580128626747247';
@@ -83,13 +83,5 @@ describe('one trade out of the log', () => {
     // account, so this is the most hostile field the module reads.
     const name = toTrade(raw({ name: 'clean[2Jname' }))?.name;
     expect(name).not.toContain('');
-  });
-
-  it('states how far the endpoint can be paged, because it is a hard ceiling', () => {
-    // One page at offset zero and one at the largest offset the endpoint will
-    // accept. Past that it answers with an error object and HTTP 200, so a
-    // reader that did not know the number would take the refusal for the end
-    // of the data.
-    expect(REACHABLE).toBe(20_000);
   });
 });

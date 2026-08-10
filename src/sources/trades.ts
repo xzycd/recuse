@@ -42,8 +42,13 @@ const PAGE = 10_000;
  */
 const MAX_OFFSET = 10_000;
 
-/** Trades reachable in total: one page at offset 0, one at the ceiling. */
-export const REACHABLE = PAGE + MAX_OFFSET;
+/**
+ * Trades reachable in total: one page at offset 0, one at the ceiling, so
+ * 20,000. Not exported, because nothing outside needs the number. What a caller
+ * needs is `truncated` and the count actually read, which is the real figure
+ * rather than the theoretical one.
+ */
+const REACHABLE = PAGE + MAX_OFFSET;
 
 /**
  * Minimum trade size in dollars to try, in order.
@@ -184,7 +189,10 @@ async function page(query: string, timeoutMs: number): Promise<{ rows: RawTrade[
     if (body.length < PAGE) return { rows, hitCeiling: false };
   }
 
-  return { rows, hitCeiling: true };
+  // Every page filled, so the read stopped at the ceiling rather than at the
+  // end of the market. The caller has to be told, because the difference is
+  // between a cumulative total and the most recent slice of one.
+  return { rows, hitCeiling: rows.length >= REACHABLE };
 }
 
 function scanFrom(rows: RawTrade[], floor: number, truncated: boolean): TradeScan {
