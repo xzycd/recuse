@@ -16,6 +16,15 @@ import type {
   Concentration, Holder, Market, Regular, RepeatPlayer, Side, Winner,
 } from '../types.js';
 
+/** Map a binary outcome index onto YES or NO without guessing on extra outcomes. */
+export function sideForIndex(market: Market, index: number): Side | undefined {
+  if (!Number.isInteger(index) || index < 0 || index >= market.outcomes.length) return undefined;
+  const label = market.outcomes[index]?.toLowerCase();
+  if (label === 'yes') return 'YES';
+  if (label === 'no') return 'NO';
+  return market.outcomes.length === 2 ? (index === 0 ? 'YES' : 'NO') : undefined;
+}
+
 /**
  * Which side a market landed on, read from its prices.
  *
@@ -24,11 +33,22 @@ import type {
  * `settled: false` alongside it and can decide whether to use it.
  */
 export function leadingSide(market: Market): { side: Side; settled: boolean } | undefined {
-  const [yes, no] = [market.outcomePrices[0], market.outcomePrices[1]];
+  let yes: number | undefined;
+  let no: number | undefined;
+  for (let i = 0; i < market.outcomePrices.length; i++) {
+    const side = sideForIndex(market, i);
+    if (side === 'YES') yes = market.outcomePrices[i];
+    if (side === 'NO') no = market.outcomePrices[i];
+  }
   if (yes === undefined || no === undefined) return undefined;
+  if (!Number.isFinite(yes) || !Number.isFinite(no) || yes < 0 || yes > 1 || no < 0 || no > 1) {
+    return undefined;
+  }
+  if (yes === no) return undefined;
 
-  // Settled markets sit at the extremes. 0.99 is not settled; 1.0 is.
-  const settled = yes === 1 || no === 1 || yes === 0 || no === 0;
+  // Both prices have to name the same binary outcome. A lone zero beside 0.7 is
+  // not a settlement, and a 50/50 payout has no single winning side at all.
+  const settled = (yes === 1 && no === 0) || (yes === 0 && no === 1);
   return { side: yes >= no ? 'YES' : 'NO', settled };
 }
 
@@ -81,14 +101,16 @@ export function concentration(
   const onSide = holders.filter((h) => h.side === side).sort((a, b) => b.size - a.size);
   if (onSide.length === 0) return undefined;
 
+  const requested = Number.isFinite(topN) ? Math.max(1, Math.floor(topN)) : 5;
+
   const totalSize = onSide.reduce((a, h) => a + h.size, 0);
-  const topSize = onSide.slice(0, topN).reduce((a, h) => a + h.size, 0);
+  const topSize = onSide.slice(0, requested).reduce((a, h) => a + h.size, 0);
 
   return {
     side,
     meaning,
     basis: 'balances',
-    topN: Math.min(topN, onSide.length),
+    topN: Math.min(requested, onSide.length),
     topShare: totalSize > 0 ? topSize / totalSize : 0,
     topSize,
     totalSize,
@@ -118,14 +140,16 @@ export function tradeConcentration(
   const held = winners.filter((w) => w.net > 0).sort((a, b) => b.net - a.net);
   if (held.length === 0) return undefined;
 
+  const requested = Number.isFinite(topN) ? Math.max(1, Math.floor(topN)) : 5;
+
   const totalSize = held.reduce((a, w) => a + w.net, 0);
-  const topSize = held.slice(0, topN).reduce((a, w) => a + w.net, 0);
+  const topSize = held.slice(0, requested).reduce((a, w) => a + w.net, 0);
 
   return {
     side,
     meaning: 'redeemed',
     basis: 'trades',
-    topN: Math.min(topN, held.length),
+    topN: Math.min(requested, held.length),
     topShare: totalSize > 0 ? topSize / totalSize : 0,
     topSize,
     totalSize,
@@ -195,17 +219,22 @@ export function repeatPlayers(outcomes: MarketOutcome[], minAppearances = 2): Re
   for (const { holders, loser } of outcomes) {
     if (!loser) continue;
 
-    // One entry per address per market. An address holding both sides of the
-    // same market counts once, or it would inflate its own appearance count.
-    const seen = new Set<string>();
+    // Reduce both sides before touching the cross-market tally. Looking at the
+    // first row only made the sort order decide whether a wallet holding both
+    // sides counted as a loss.
+    const inMarket = new Map<string, { name?: string; losingSize: number }>();
 
     for (const h of holders) {
-      if (seen.has(h.address)) continue;
-      seen.add(h.address);
+      const one = inMarket.get(h.address) ?? { name: h.name, losingSize: 0 };
+      one.name ??= h.name;
+      if (h.side === loser) one.losingSize += h.size;
+      inMarket.set(h.address, one);
+    }
 
-      const entry = tally.get(h.address) ?? {
-        address: h.address,
-        name: h.name,
+    for (const [address, one] of inMarket) {
+      const entry = tally.get(address) ?? {
+        address,
+        name: one.name,
         losses: 0,
         appearances: 0,
         lossRate: 0,
@@ -213,14 +242,14 @@ export function repeatPlayers(outcomes: MarketOutcome[], minAppearances = 2): Re
       };
 
       entry.appearances += 1;
-      if (h.side === loser) {
+      if (one.losingSize > 0) {
         entry.losses += 1;
-        entry.size += h.size;
+        entry.size += one.losingSize;
       }
       // Keep a real name if we ever see one.
-      entry.name ??= h.name;
+      entry.name ??= one.name;
 
-      tally.set(h.address, entry);
+      tally.set(address, entry);
     }
   }
 
@@ -259,15 +288,23 @@ export function repeatWinners(outcomes: WinningOutcome[], minWins = 2): Regular[
   const tally = new Map<string, Regular>();
 
   for (const { market, winners } of outcomes) {
-    // One entry per address per market. The subgraph returns a single position
-    // per wallet per token, so this is defensive rather than load bearing, and
-    // it is the same guard `repeatPlayers` carries for the same reason.
-    const seen = new Set<string>();
+    const inMarket = new Map<string, Winner>();
 
     for (const w of winners) {
-      if (w.net <= 0 || seen.has(w.address)) continue;
-      seen.add(w.address);
+      if (w.net <= 0) continue;
+      const one = inMarket.get(w.address);
+      if (!one) {
+        inMarket.set(w.address, { ...w });
+      } else {
+        one.name ??= w.name;
+        one.bought += w.bought;
+        one.net += w.net;
+        one.spent += w.spent;
+        one.netSpent += w.netSpent;
+      }
+    }
 
+    for (const w of inMarket.values()) {
       const entry = tally.get(w.address) ?? {
         address: w.address,
         name: w.name,
@@ -314,6 +351,8 @@ export function caveatsFor(opts: {
    * its winning side. ISO time of the last indexed trade.
    */
   beyondIndex?: string;
+  /** Why index coverage could not be established for an empty result. */
+  coverageUnknown?: string;
 }): string[] {
   const out: string[] = [];
 
@@ -337,16 +376,16 @@ export function caveatsFor(opts: {
         `the trade index stops at ${opts.beyondIndex.slice(0, 10)} and this market closed after that, `
           + 'so the winning side was not read rather than found empty',
       );
-    }
-
-    if (opts.winnersFailed) {
+    } else if (opts.coverageUnknown) {
+      out.push(`winning side not counted: ${opts.coverageUnknown}`);
+    } else if (opts.winnersFailed) {
       // The distinction that matters: the winning side was not read, as opposed
       // to being read and found empty. Saying nothing here would leave the
       // losing side looking like the whole market.
       out.push(`winning side not rebuilt: ${opts.winnersFailed}`);
     } else if (opts.winnerFloor) {
       out.push(
-        `winning side is from trades, not balances, and omits positions under ${opts.winnerFloor} tokens`,
+        `winning side is from trades, not balances, and omits positions at or below ${opts.winnerFloor} tokens`,
       );
       if (opts.winnersTruncated) {
         out.push('more winning positions exist above that floor than were requested');

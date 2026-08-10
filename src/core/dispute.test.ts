@@ -5,7 +5,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { disputeWeight, formatSteps, normaliseStep, normaliseSteps, parseDispute } from './dispute.js';
+import {
+  disputeWeight, formatSteps, normaliseStep, normaliseSteps, parseDispute, parseMarketDate,
+} from './dispute.js';
 import type { Market } from '../types.js';
 
 function market(steps: string[], overrides: Partial<Market> = {}): Market {
@@ -115,6 +117,27 @@ describe('parseDispute: edges', () => {
 
   it('does not let an unknown step inflate the round count', () => {
     expect(parseDispute(market(['proposed', 'escalated', 'resolved'])).rounds).toBe(0);
+  });
+});
+
+describe('parseMarketDate', () => {
+  it('repairs the non-ISO closedTime shape Gamma serves', () => {
+    expect(parseMarketDate('2025-07-09 00:30:39+00')?.toISOString())
+      .toBe('2025-07-09T00:30:39.000Z');
+  });
+
+  it('treats a timestamp without a zone as UTC', () => {
+    expect(parseMarketDate('2026-08-10T12:30:00')?.toISOString())
+      .toBe('2026-08-10T12:30:00.000Z');
+  });
+
+  it('accepts a calendar-only value at UTC midnight', () => {
+    expect(parseMarketDate('2026-08-10')?.toISOString()).toBe('2026-08-10T00:00:00.000Z');
+  });
+
+  it('rejects ambiguous and impossible calendar dates', () => {
+    expect(parseMarketDate('01/02/2026')).toBeUndefined();
+    expect(parseMarketDate('2026-02-30T00:00:00Z')).toBeUndefined();
   });
 });
 

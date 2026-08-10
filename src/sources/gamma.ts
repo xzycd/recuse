@@ -7,15 +7,33 @@
  * you ask for, so anything wider pages.
  */
 
-import { getJson, num, parseEmbeddedJson } from './http.js';
+import { getJson, num, numOrUndefined, parseEmbeddedJson } from './http.js';
 import { normaliseSteps } from '../core/dispute.js';
-import { safeHash, safeText, safeTokenId } from '../core/safe.js';
+import { safeAddress, safeHash, safeText, safeTokenId } from '../core/safe.js';
 import type { Market } from '../types.js';
 
 const BASE = 'https://gamma-api.polymarket.com';
 
 /** Gamma silently caps page size here. Asking for more just wastes a round trip. */
 const PAGE_SIZE = 100;
+
+function newest(a: Market, b: Market): Market {
+  const aTime = Date.parse(a.updatedAt ?? '');
+  const bTime = Date.parse(b.updatedAt ?? '');
+  if (Number.isFinite(aTime) && Number.isFinite(bTime)) return bTime >= aTime ? b : a;
+  return Number.isFinite(bTime) ? b : a;
+}
+
+/** One current record per condition, preferring the newest dated copy. */
+export function distinctMarkets(markets: Market[]): Market[] {
+  const distinct = new Map<string, Market>();
+  for (const market of markets) {
+    if (!market.conditionId) continue;
+    const existing = distinct.get(market.conditionId);
+    distinct.set(market.conditionId, existing ? newest(existing, market) : market);
+  }
+  return [...distinct.values()];
+}
 
 /** Raw shape, loosely typed because Gamma adds fields without warning. */
 interface RawMarket {
@@ -54,16 +72,30 @@ interface RawMarket {
  * --json output is clean, which a render-time filter would not achieve.
  */
 export function toMarket(raw: RawMarket): Market {
+  const embeddedArray = (value: unknown): unknown[] => {
+    const decoded = parseEmbeddedJson<unknown>(value, []);
+    return Array.isArray(decoded) ? decoded : [];
+  };
+  const nonnegative = (value: unknown): number => Math.max(0, num(value));
+  const positive = (value: unknown): number | undefined => {
+    const parsed = numOrUndefined(value);
+    return parsed !== undefined && parsed > 0 ? parsed : undefined;
+  };
+  const price = (value: unknown): number | undefined => {
+    const parsed = numOrUndefined(value);
+    return parsed !== undefined && parsed >= 0 && parsed <= 1 ? parsed : undefined;
+  };
+
   return {
     conditionId: safeHash(raw.conditionId) ?? '',
     questionId: safeHash(raw.questionID),
     slug: safeText(raw.slug, 120),
     question: safeText(raw.question) || '(untitled market)',
-    volume: num(raw.volumeNum ?? raw.volume),
-    liquidity: num(raw.liquidityNum ?? raw.liquidity),
-    resolvedBy: raw.resolvedBy?.toLowerCase(),
-    umaBond: num(raw.umaBond, 0) || undefined,
-    umaReward: num(raw.umaReward, 0) || undefined,
+    volume: nonnegative(raw.volumeNum ?? raw.volume),
+    liquidity: nonnegative(raw.liquidityNum ?? raw.liquidity),
+    resolvedBy: safeAddress(raw.resolvedBy),
+    umaBond: positive(raw.umaBond),
+    umaReward: positive(raw.umaReward),
     resolutionSource: safeText(raw.resolutionSource) || undefined,
     endDate: safeText(raw.endDate, 40) || undefined,
     umaEndDate: safeText(raw.umaEndDate, 40) || undefined,
@@ -75,14 +107,14 @@ export function toMarket(raw: RawMarket): Market {
     closed: raw.closed === true,
     active: raw.active !== false,
     negRisk: raw.negRisk === true,
-    resolutionSteps: normaliseSteps(parseEmbeddedJson<unknown[]>(raw.umaResolutionStatuses, [])),
+    resolutionSteps: normaliseSteps(embeddedArray(raw.umaResolutionStatuses)),
     // Token ids are interpolated into a GraphQL query downstream, so a value
     // that is not a plain decimal integer is dropped rather than carried.
-    tokenIds: parseEmbeddedJson<unknown[]>(raw.clobTokenIds, [])
-      .map((t) => safeTokenId(t))
-      .filter((t): t is string => t !== undefined),
-    outcomes: parseEmbeddedJson<unknown[]>(raw.outcomes, []).map((o) => safeText(o, 60)),
-    outcomePrices: parseEmbeddedJson<unknown[]>(raw.outcomePrices, []).map((p) => num(p)),
+    // Invalid entries stay in place as undefined. Filtering them would shift the
+    // next token onto the wrong outcome, which is worse than losing the field.
+    tokenIds: embeddedArray(raw.clobTokenIds).map((t) => safeTokenId(t)),
+    outcomes: embeddedArray(raw.outcomes).map((o) => safeText(o, 60)),
+    outcomePrices: embeddedArray(raw.outcomePrices).map(price),
   };
 }
 
@@ -98,12 +130,17 @@ export interface MarketQuery {
 /** Page through Gamma and return markets in the requested order. */
 export async function fetchMarkets(query: MarketQuery = {}): Promise<Market[]> {
   const { closed, active, limit = 500, order = 'volumeNum', ascending = false } = query;
+  const requested = Number.isFinite(limit)
+    ? Math.min(5_000, Math.max(0, Math.floor(limit)))
+    : 500;
 
   const out: Market[] = [];
+  const indexByCondition = new Map<string, number>();
 
-  for (let offset = 0; out.length < limit; offset += PAGE_SIZE) {
+  for (let offset = 0; out.length < requested;) {
+    const pageSize = Math.min(PAGE_SIZE, requested - out.length);
     const params = new URLSearchParams({
-      limit: String(Math.min(PAGE_SIZE, limit - out.length)),
+      limit: String(pageSize),
       offset: String(offset),
       order,
       ascending: String(ascending),
@@ -112,15 +149,29 @@ export async function fetchMarkets(query: MarketQuery = {}): Promise<Market[]> {
     if (active !== undefined) params.set('active', String(active));
 
     const page = await getJson<RawMarket[]>(`${BASE}/markets?${params}`);
-    if (!Array.isArray(page) || page.length === 0) break;
+    if (!Array.isArray(page)) throw new Error('Gamma returned an invalid market page');
+    if (page.length === 0) break;
+    offset += page.length;
 
-    out.push(...page.map(toMarket));
+    for (const market of page.map(toMarket)) {
+      // Every downstream join and deduplication key is the condition id. A row
+      // without one cannot be assessed and is omitted rather than becoming an
+      // empty key shared by unrelated markets.
+      if (!market.conditionId) continue;
+      const existingIndex = indexByCondition.get(market.conditionId);
+      if (existingIndex === undefined) {
+        indexByCondition.set(market.conditionId, out.length);
+        out.push(market);
+      } else {
+        out[existingIndex] = newest(out[existingIndex]!, market);
+      }
+    }
 
     // Short page means we reached the end of the result set.
-    if (page.length < PAGE_SIZE) break;
+    if (page.length < pageSize) break;
   }
 
-  return out.slice(0, limit);
+  return out.slice(0, requested);
 }
 
 /**
@@ -151,18 +202,26 @@ export async function fetchMarket(idOrSlug: string): Promise<Market | undefined>
     ? `condition_ids=${idOrSlug}`
     : `slug=${encodeURIComponent(idOrSlug)}`;
 
+  let answered = 0;
+  let lastError: Error | undefined;
+
   for (const closed of [false, true]) {
     try {
       const res = await getJson<RawMarket[]>(`${BASE}/markets?${key}&closed=${closed}`);
-      if (!Array.isArray(res)) continue;
+      if (!Array.isArray(res)) throw new Error('Gamma returned an invalid market lookup');
+      answered += 1;
 
       const hit = res.map(toMarket).find((m) => matchesRequest(m, idOrSlug));
       if (hit) return hit;
-    } catch {
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
       // Try the other closed state rather than failing the whole command.
     }
   }
 
+  // A verified miss requires both halves of the catalogue. If one half could
+  // not be read, returning undefined would turn an outage into "not found".
+  if (answered < 2 && lastError) throw new Error(`market lookup incomplete: ${lastError.message}`);
   return undefined;
 }
 
@@ -196,8 +255,8 @@ export async function fetchBothStates(
     fetchMarkets({ closed: true, limit: Math.ceil(scan / 2) }),
   ]);
 
-  const all = [...open, ...closed];
-  return { markets: all, scanned: all.length };
+  const markets = distinctMarkets([...open, ...closed]);
+  return { markets, scanned: markets.length };
 }
 
 /**
@@ -215,12 +274,14 @@ export async function fetchBothStates(
  */
 export async function fetchMarketsByCondition(
   conditionIds: string[],
-): Promise<{ markets: Map<string, Market>; asked: number; missing: string[] }> {
+): Promise<{ markets: Map<string, Market>; asked: number; missing: string[]; failed: number }> {
   const wanted = [...new Set(conditionIds.map((id) => id.toLowerCase()))].filter((id) =>
     /^0x[0-9a-f]{64}$/.test(id),
   );
   const markets = new Map<string, Market>();
-  if (wanted.length === 0) return { markets, asked: 0, missing: [] };
+  if (wanted.length === 0) return { markets, asked: 0, missing: [], failed: 0 };
+
+  let failed = 0;
 
   for (let i = 0; i < wanted.length; i += PAGE_SIZE) {
     const batch = wanted.slice(i, i + PAGE_SIZE);
@@ -234,19 +295,26 @@ export async function fetchMarketsByCondition(
         const page = await getJson<RawMarket[]>(
           `${BASE}/markets?${key}&closed=${closed}&limit=${PAGE_SIZE}`,
         );
-        if (!Array.isArray(page)) continue;
+        if (!Array.isArray(page)) throw new Error('Gamma returned an invalid batch lookup');
 
         for (const market of page.map(toMarket)) {
           // Verified against the request, never trusted because it came back.
           if (market.conditionId && batch.includes(market.conditionId)) {
-            markets.set(market.conditionId, market);
+            const existing = markets.get(market.conditionId);
+            markets.set(market.conditionId, existing ? newest(existing, market) : market);
           }
         }
       } catch {
+        failed += 1;
         // Try the other closed state rather than failing every market at once.
       }
     }
   }
 
-  return { markets, asked: wanted.length, missing: wanted.filter((id) => !markets.has(id)) };
+  return {
+    markets,
+    asked: wanted.length,
+    missing: wanted.filter((id) => !markets.has(id)),
+    failed,
+  };
 }

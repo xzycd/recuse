@@ -36,6 +36,7 @@ import type { WalletLedger } from './wallet.js';
 import type { QueueScan } from './queue.js';
 import type { RegularScan } from './assess.js';
 import { waited } from './queue.js';
+import { redactMessage, safeAddress } from './safe.js';
 
 /**
  * Protocol versions this speaks, newest first.
@@ -59,7 +60,7 @@ export interface JsonRpcMessage {
   jsonrpc?: string;
   id?: string | number | null;
   method?: string;
-  params?: Record<string, unknown>;
+  params?: unknown;
 }
 
 export interface JsonRpcReply {
@@ -119,7 +120,7 @@ function share(c: Concentration | undefined): Record<string, unknown> | undefine
     totalSize: c.totalSize,
     holderCount: c.holderCount,
     holderCountIsFloor: true,
-    ...(c.floor ? { positionsBelowTokensNotRequested: c.floor } : {}),
+    ...(c.floor ? { positionsAtOrBelowTokensNotRequested: c.floor } : {}),
   };
 }
 
@@ -201,7 +202,12 @@ export function recuseTools(engine: Engine): McpTool[] {
           return {
             found: false,
             market: id,
-            limits: ['no market matched, and an unverified match is reported as a miss rather than guessed at'],
+            evidence: 'catalogue lookup only',
+            caveats: ['no verified market matched this identifier'],
+            limits: [
+              ...ALWAYS,
+              'no market matched, and an unverified match is reported as a miss rather than guessed at',
+            ],
           };
         }
 
@@ -210,7 +216,8 @@ export function recuseTools(engine: Engine): McpTool[] {
           ...marketRow(a),
           phase: a.dispute.phase,
           everContested: a.dispute.contested,
-          winners: (a.winners ?? []).slice(0, 10).map(winnerRow),
+          ...(a.winners ? { winners: a.winners.slice(0, 10).map(winnerRow) } : {}),
+          ...(a.tradeIndexCoverage ? { tradeIndexCoverage: a.tradeIndexCoverage } : {}),
           evidence: a.tier,
           caveats: a.caveats,
           limits: [
@@ -241,7 +248,13 @@ export function recuseTools(engine: Engine): McpTool[] {
         const id = requireString(args.market, 'market');
         const limit = clamp(args.limit, 20, 1, 50);
         const a = await engine.winners(id, limit);
-        if (!a) return { found: false, market: id, limits: ['no market matched'] };
+        if (!a) return {
+          found: false,
+          market: id,
+          evidence: 'catalogue lookup only',
+          caveats: ['no verified market matched this identifier'],
+          limits: [...ALWAYS, 'no market matched'],
+        };
 
         const conc = a.winnerConcentration;
         return {
@@ -249,12 +262,10 @@ export function recuseTools(engine: Engine): McpTool[] {
           conditionId: a.market.conditionId,
           question: a.market.question,
           concentration: share(conc),
-          winners: (a.winners ?? []).map(winnerRow),
-          // Absent unless the reading ran past the index. Present, it means the
-          // empty winners array above says nothing about who held this side.
-          ...(a.tradeIndexEndsAt
-            ? { winningSideRead: false, tradeIndexEndsAt: a.tradeIndexEndsAt }
-            : { winningSideRead: true }),
+          ...(a.winners ? { winners: a.winners.map(winnerRow) } : {}),
+          winningSideRead: a.winners !== undefined,
+          ...(a.tradeIndexCoverage ? { tradeIndexCoverage: a.tradeIndexCoverage } : {}),
+          ...(a.tradeIndexEndsAt ? { tradeIndexEndsAt: a.tradeIndexEndsAt } : {}),
           evidence: a.tier,
           caveats: a.caveats,
           limits: [
@@ -264,7 +275,7 @@ export function recuseTools(engine: Engine): McpTool[] {
               : []),
             'these are cumulative buys, not balances. a balance is a position now and a winner\'s is zero',
             ...(conc?.floor
-              ? [`positions below ${conc.floor} tokens were never requested, because the subgraph will not sort by size without a floor`]
+              ? [`positions at or below ${conc.floor} tokens were never requested, because the subgraph will not sort by size without a floor`]
               : []),
             'buying the winning side is what a correct prediction looks like. it is not on its own evidence of anything else',
           ],
@@ -316,7 +327,7 @@ export function recuseTools(engine: Engine): McpTool[] {
             usdNet: r.gain,
             markets: r.markets,
           })),
-          evidence: 'positions+trades',
+          evidence: 'trades',
           caveats: [
             ...(s.marketsFailed > 0
               ? [`${s.marketsFailed} contested markets could not be read and are in no wallet's count`]
@@ -327,9 +338,15 @@ export function recuseTools(engine: Engine): McpTool[] {
             ...(s.beyondIndex > 0
               ? [`${s.beyondIndex} contested markets closed after the trade index stops${s.indexHead ? ` at ${s.indexHead.slice(0, 10)}` : ''} and were not read at all, so this covers older markets and not recent ones`]
               : []),
+            ...(s.coverageUnknown > 0
+              ? [`${s.coverageUnknown} empty market readings had unknown trade-index coverage and were not counted`]
+              : []),
+            ...(s.positionsDropped > 0
+              ? [`${s.positionsDropped} malformed winning-position rows were omitted`]
+              : []),
             ...(s.undecided > 0 ? [`${s.undecided} contested markets have not settled and were skipped`] : []),
             ...(s.floorHigh > 0
-              ? [`positions under ${s.floorLow} tokens were never requested${s.floorRaised > 0 ? `, and ${s.floorRaised} markets needed a floor up to ${s.floorHigh}` : ''}`]
+              ? [`positions at or below ${s.floorLow} tokens were never requested${s.floorRaised > 0 ? `, and ${s.floorRaised} markets needed a floor up to ${s.floorHigh}` : ''}`]
               : []),
             ...(s.regulars.length > s.namesAsked
               ? [`names were looked up for the top ${s.namesAsked} rows only, so an absent name below that means unread rather than unnamed`]
@@ -348,7 +365,7 @@ export function recuseTools(engine: Engine): McpTool[] {
     {
       name: 'wallet_record',
       description:
-        'One wallet\'s record across resolved Polymarket markets, disputed ones first: which side it held, '
+        'One wallet\'s settlement positions across resolved Polymarket markets, disputed ones first: which side it held, '
         + 'whether that side won, and the net in dollars. Positions come from cumulative trades and '
         + 'settlement from the on-chain payout, so a wallet that redeemed and vanished from every '
         + 'balance-based tracker is still fully visible. A wallet appearing on both sides of one market is '
@@ -362,7 +379,8 @@ export function recuseTools(engine: Engine): McpTool[] {
         required: ['address'],
       },
       async run(args) {
-        const address = requireString(args.address, 'address');
+        const address = safeAddress(requireString(args.address, 'address'));
+        if (!address) throw new Error('address must be a 0x-prefixed 20-byte address');
         const limit = clamp(args.limit, 25, 1, 100);
         const ledger = await engine.wallet(address, limit);
 
@@ -377,6 +395,7 @@ export function recuseTools(engine: Engine): McpTool[] {
           netUsd: ledger.gain,
           contestedMarkets: ledger.contested,
           contestedNetUsd: ledger.contestedGain,
+          tradeIndex: ledger.tradeIndex,
           positions: ledger.entries.slice(0, limit).map((e) => ({
             conditionId: e.conditionId,
             question: e.question,
@@ -385,15 +404,16 @@ export function recuseTools(engine: Engine): McpTool[] {
             result: result(e),
             tokensHeld: e.net,
             usdCost: e.cost,
-            usdProceeds: e.proceeds,
+            ...(e.proceeds === undefined ? {} : { usdProceeds: e.proceeds }),
             netUsd: e.gain,
           })),
-          evidence: 'positions+trades',
+          evidence: 'trades',
           caveats: ledger.caveats,
           limits: [
             ...ALWAYS,
             'a profitable record is a record of being right, and this tool cannot tell that from anything else',
             'only the positions read are summarised here, so the totals cover the positions listed and not the wallet\'s whole history',
+            'positions sold before settlement and positions at or below the reported floor are absent',
           ],
         };
       },
@@ -435,6 +455,8 @@ export function recuseTools(engine: Engine): McpTool[] {
             waitedMs: p.waited,
             volumeUsd: p.market.volume,
           })),
+          evidence: 'catalogue',
+          caveats: [],
           limits: [
             ...ALWAYS,
             'a lifecycle that stops short is not the same as a market that is stuck, and this cannot tell them apart',
@@ -475,7 +497,9 @@ function winnerRow(w: { address: string; name?: string; bought: number; net: num
 }
 
 function tierOf(assessments: Assessment[]): string {
-  return assessments.some((a) => a.tier === 'positions+trades') ? 'positions+trades' : 'positions';
+  if (assessments.length === 0) return 'none: no market assessment answered';
+  const tiers = unique(assessments.map((a) => a.tier));
+  return tiers.length === 1 ? tiers[0]! : `mixed: ${tiers.join(', ')}`;
 }
 
 function unique(values: string[]): string[] {
@@ -483,19 +507,33 @@ function unique(values: string[]): string[] {
 }
 
 function clamp(value: unknown, fallback: number, min: number, max: number): number {
-  // Number(null) is 0 and would read as a deliberate zero here, the same way it
-  // put every subgraph position on outcome 0.
-  if (value === undefined || value === null || value === '') return fallback;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(n)));
+  // Null and absent mean the optional argument was omitted. Anything else has
+  // to match the integer schema rather than being coerced into one.
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    throw new Error('numeric arguments must be finite integers');
+  }
+  return Math.min(max, Math.max(min, value));
 }
 
 function requireString(value: unknown, name: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new Error(`${name} is required and must be a string`);
   }
-  return value.trim();
+  const clean = value.trim();
+  if (clean.length > 256) throw new Error(`${name} is too long`);
+  return clean;
+}
+
+function object(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function validId(value: unknown): value is string | number | null {
+  return value === null || typeof value === 'string'
+    || (typeof value === 'number' && Number.isFinite(value));
 }
 
 function reply(id: string | number | null, result: unknown): JsonRpcReply {
@@ -522,16 +560,27 @@ export async function dispatch(
   tools: McpTool[],
   info: ServerInfo,
 ): Promise<JsonRpcReply | undefined> {
-  const id = message.id ?? null;
+  const id = validId(message.id) ? (message.id ?? null) : null;
   const isNotification = message.id === undefined;
 
-  if (message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
+  if (
+    message.jsonrpc !== '2.0' || typeof message.method !== 'string'
+    || (!isNotification && !validId(message.id))
+  ) {
     return isNotification ? undefined : fail(id, JSON_RPC_ERRORS.invalidRequest, 'not a JSON-RPC 2.0 request');
+  }
+
+  const params = message.params === undefined ? {} : object(message.params);
+  if (!params) {
+    return isNotification
+      ? undefined
+      : fail(id, JSON_RPC_ERRORS.invalidParams, 'params must be an object');
   }
 
   switch (message.method) {
     case 'initialize': {
-      const asked = message.params?.protocolVersion;
+      if (isNotification) return undefined;
+      const asked = params.protocolVersion;
       const version = PROTOCOL_VERSIONS.find((v) => v === asked) ?? PROTOCOL_VERSIONS[0];
       return reply(id, {
         protocolVersion: version,
@@ -551,10 +600,10 @@ export async function dispatch(
       return undefined;
 
     case 'ping':
-      return reply(id, {});
+      return isNotification ? undefined : reply(id, {});
 
     case 'tools/list':
-      return reply(id, {
+      return isNotification ? undefined : reply(id, {
         tools: tools.map((t) => ({
           name: t.name,
           description: t.description,
@@ -563,13 +612,23 @@ export async function dispatch(
       });
 
     case 'tools/call': {
-      const name = message.params?.name;
+      const name = params.name;
       const tool = tools.find((t) => t.name === name);
-      if (!tool) return fail(id, JSON_RPC_ERRORS.invalidParams, `no tool named ${String(name)}`);
+      if (!tool) {
+        return isNotification
+          ? undefined
+          : fail(id, JSON_RPC_ERRORS.invalidParams, `no tool named ${String(name)}`);
+      }
 
-      const args = (message.params?.arguments ?? {}) as Record<string, unknown>;
+      const args = params.arguments === undefined ? {} : object(params.arguments);
+      if (!args) {
+        return isNotification
+          ? undefined
+          : fail(id, JSON_RPC_ERRORS.invalidParams, 'tool arguments must be an object');
+      }
       try {
         const result = await tool.run(args);
+        if (isNotification) return undefined;
         return reply(id, {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           isError: false,
@@ -578,8 +637,9 @@ export async function dispatch(
         // A tool that failed reports through the result rather than through a
         // protocol error, so the model can read what went wrong and try
         // something else instead of the session dying.
+        if (isNotification) return undefined;
         return reply(id, {
-          content: [{ type: 'text', text: `recuse: ${(err as Error).message}` }],
+          content: [{ type: 'text', text: `recuse: ${redactMessage((err as Error).message ?? String(err))}` }],
           isError: true,
         });
       }
@@ -599,12 +659,19 @@ export async function dispatch(
  * on every small test and fails the first time a real payload crosses the pipe
  * buffer.
  */
-export function lineSplitter(): (chunk: string) => string[] {
+export const MAX_MCP_LINE_BYTES = 1024 * 1024;
+
+export function lineSplitter(maxBytes = MAX_MCP_LINE_BYTES): (chunk: string) => string[] {
   let buffer = '';
   return (chunk: string) => {
     buffer += chunk;
     const parts = buffer.split('\n');
     buffer = parts.pop() ?? '';
+    if (Buffer.byteLength(buffer, 'utf8') > maxBytes
+      || parts.some((line) => Buffer.byteLength(line, 'utf8') > maxBytes)) {
+      buffer = '';
+      throw new Error(`MCP message exceeds ${maxBytes} bytes`);
+    }
     return parts.map((l) => l.trim()).filter((l) => l !== '');
   };
 }
@@ -622,27 +689,44 @@ export interface ServeIo {
  */
 export async function serve(io: ServeIo, tools: McpTool[], info: ServerInfo): Promise<void> {
   const split = lineSplitter();
+  const decoder = new TextDecoder();
 
   for await (const chunk of io.input) {
-    for (const line of split(String(chunk))) {
-      let message: JsonRpcMessage;
+    let lines: string[];
+    try {
+      lines = split(typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }));
+    } catch {
+      io.write(JSON.stringify(fail(null, JSON_RPC_ERRORS.invalidRequest, 'message too large')));
+      continue;
+    }
+
+    for (const line of lines) {
+      let parsed: unknown;
       try {
-        message = JSON.parse(line) as JsonRpcMessage;
+        parsed = JSON.parse(line) as unknown;
       } catch {
         io.write(JSON.stringify(fail(null, JSON_RPC_ERRORS.parse, 'invalid JSON')));
         continue;
       }
 
-      if (Array.isArray(message)) {
+      const raw = object(parsed);
+      if (!raw) {
         io.write(JSON.stringify(fail(null, JSON_RPC_ERRORS.invalidRequest, 'batches are not supported')));
         continue;
       }
+      const message = raw as JsonRpcMessage;
 
       let response: JsonRpcReply | undefined;
       try {
         response = await dispatch(message, tools, info);
-      } catch (err) {
-        response = fail(message.id ?? null, JSON_RPC_ERRORS.internal, (err as Error).message);
+      } catch {
+        response = message.id === undefined
+          ? undefined
+          : fail(
+            validId(message.id) ? (message.id ?? null) : null,
+            JSON_RPC_ERRORS.internal,
+            'internal error',
+          );
       }
 
       if (response) io.write(JSON.stringify(response));

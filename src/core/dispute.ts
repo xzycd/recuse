@@ -62,9 +62,27 @@ function derivePhase(steps: ResolutionStep[], market?: Pick<Market, 'closed'>): 
 export function parseMarketDate(value: unknown): Date | undefined {
   if (typeof value !== 'string' || value === '') return undefined;
 
-  const normalised = value
-    .replace(' ', 'T')
-    .replace(/([+-]\d{2})$/, '$1:00');
+  // Accept only the two shapes Gamma serves. JavaScript's Date parser also
+  // accepts locale dates such as 01/02/2026 and silently normalises impossible
+  // dates, neither of which is a safe clock for index-coverage decisions.
+  const shape = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?$/;
+  const match = shape.exec(value);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1
+    || calendar.getUTCDate() !== day) return undefined;
+
+  let normalised = value.replace(' ', 'T');
+  if (!normalised.includes('T')) return calendar;
+  normalised = normalised.replace(/([+-]\d{2})$/, '$1:00');
+  // Gamma timestamps are UTC. A timestamp without an explicit zone must not
+  // change meaning with the machine running the CLI.
+  if (normalised.includes('T') && !/(?:Z|[+-]\d{2}:?\d{2})$/.test(normalised)) {
+    normalised += 'Z';
+  }
 
   const d = new Date(normalised);
   return Number.isNaN(d.getTime()) ? undefined : d;

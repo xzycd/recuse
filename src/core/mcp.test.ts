@@ -15,6 +15,7 @@ import { dispatch, lineSplitter, recuseTools, serve, type Engine } from './mcp.j
 import type { Assessment, Market } from '../types.js';
 
 const INFO = { name: 'recuse', version: '0.6.0' };
+const WALLET = `0x${'1'.repeat(40)}`;
 
 const market = (over: Partial<Market> = {}): Market => ({
   conditionId: '0xabc',
@@ -22,12 +23,15 @@ const market = (over: Partial<Market> = {}): Market => ({
   question: 'Will X happen?',
   outcomes: ['Yes', 'No'],
   tokenIds: ['1', '2'],
-  prices: [0, 1],
+  outcomePrices: [0, 1],
   volume: 242_200_000,
+  liquidity: 0,
   resolutionSteps: ['proposed', 'disputed', 'proposed', 'resolved'],
   closed: true,
+  active: false,
+  negRisk: false,
   ...over,
-} as Market);
+});
 
 const assessment = (over: Partial<Assessment> = {}): Assessment => ({
   market: market(),
@@ -39,8 +43,8 @@ const assessment = (over: Partial<Assessment> = {}): Assessment => ({
     steps: ['proposed', 'disputed', 'proposed', 'resolved'],
   },
   concentration: {
-    side: 'Yes',
-    meaning: 'lost',
+    side: 'YES',
+    meaning: 'wiped',
     basis: 'balances',
     topN: 5,
     topShare: 0.33,
@@ -53,7 +57,7 @@ const assessment = (over: Partial<Assessment> = {}): Assessment => ({
   pool: 242_200_000,
   fetchedAt: '2026-08-08T00:00:00.000Z',
   ...over,
-} as Assessment);
+});
 
 const engine: Engine = {
   async contested() {
@@ -65,19 +69,21 @@ const engine: Engine = {
   async winners(id) {
     return id === 'missing' ? undefined : assessment({
       winnerConcentration: {
-        side: 'No', meaning: 'won', basis: 'trades', topN: 5, topShare: 0.52,
+        side: 'NO', meaning: 'redeemed', basis: 'trades', topN: 5, topShare: 0.52,
         topSize: 30_500_000, totalSize: 58_900_000, holderCount: 20, floor: 1000,
       },
       winners: [
         { address: '0x5bff', name: '0943', bought: 49_700_000, net: 34_000_000, spent: 18_700_000, netSpent: 18_700_000 },
       ],
       tier: 'positions+trades',
+      tradeIndexCoverage: { status: 'covered', lastTradeAt: '2026-01-05T22:05:45.000Z' },
     });
   },
   async wallet(address) {
     return {
       address, entries: [], won: 29, lost: 9, split: 0, open: 1,
       gain: 859_000, contestedGain: 275_000, contested: 11, caveats: [],
+      tradeIndex: { status: 'known', lastTradeAt: '2026-01-05T22:05:45.000Z' },
     };
   },
   async pending() {
@@ -98,8 +104,10 @@ const engine: Engine = {
       ],
       marketsRead: 38, marketsScored: 20, marketsFailed: 2, undecided: 4, empty: 18,
       beyondIndex: 25, indexHead: '2026-01-05T22:05:45.000Z',
+      coverageUnknown: 3,
       floorLow: 1_000, floorHigh: 100_000, floorRaised: 6,
       wallets: 494, namesAsked: 1, namesFailed: 0,
+      positionsDropped: 2,
     };
   },
 };
@@ -112,7 +120,8 @@ const call = async (name: string, args: Record<string, unknown> = {}) => {
     tools, INFO,
   );
   const result = res?.result as { content: Array<{ text: string }>; isError: boolean };
-  return { isError: result.isError, payload: JSON.parse(result.content[0]!.text) };
+  const text = result.content[0]!.text;
+  return { isError: result.isError, payload: result.isError ? text : JSON.parse(text) };
 };
 
 describe('the wire format', () => {
@@ -139,6 +148,12 @@ describe('the wire format', () => {
     // Including one it has never heard of. A reply carrying no id is worse
     // than silence.
     expect(await dispatch({ jsonrpc: '2.0', method: 'notifications/whatever' }, tools, INFO)).toBeUndefined();
+    expect(await dispatch({ jsonrpc: '2.0', method: 'initialize', params: {} }, tools, INFO)).toBeUndefined();
+    expect(await dispatch({ jsonrpc: '2.0', method: 'tools/list' }, tools, INFO)).toBeUndefined();
+    expect(await dispatch({
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: 'market_record', arguments: { market: '0xabc' } },
+    }, tools, INFO)).toBeUndefined();
   });
 
   it('reports an unknown method rather than staying silent on a request', async () => {
@@ -170,12 +185,37 @@ describe('the wire format', () => {
     expect(result.content[0]!.text).toContain('market is required');
   });
 
+  it('rejects a malformed wallet address instead of reporting an empty wallet', async () => {
+    const res = await dispatch({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'wallet_record', arguments: { address: 'not-a-wallet' } },
+    }, tools, INFO);
+    const result = res?.result as { content: Array<{ text: string }>; isError: boolean };
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain('20-byte address');
+  });
+
   it('rejects an unknown tool at the protocol level', async () => {
     const res = await dispatch(
       { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'drop_table' } },
       tools, INFO,
     );
     expect(res?.error?.code).toBe(-32602);
+  });
+
+  it('rejects invalid ids, params and argument containers', async () => {
+    expect((await dispatch(
+      { jsonrpc: '2.0', id: Number.NaN, method: 'ping' }, tools, INFO,
+    ))?.error?.code).toBe(-32600);
+    expect((await dispatch(
+      { jsonrpc: '2.0', id: 1, method: 'tools/list', params: [] }, tools, INFO,
+    ))?.error?.code).toBe(-32602);
+    expect((await dispatch(
+      {
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'market_record', arguments: [] },
+      }, tools, INFO,
+    ))?.error?.code).toBe(-32602);
   });
 });
 
@@ -191,6 +231,12 @@ describe('lineSplitter', () => {
   it('returns several messages from one chunk', () => {
     const split = lineSplitter();
     expect(split('{"a":1}\n{"b":2}\n')).toEqual(['{"a":1}', '{"b":2}']);
+  });
+
+  it('bounds a single message and resets after rejecting it', () => {
+    const split = lineSplitter(10);
+    expect(() => split('x'.repeat(11))).toThrow(/exceeds/);
+    expect(split('{"a":1}\n')).toEqual(['{"a":1}']);
   });
 });
 
@@ -229,6 +275,38 @@ describe('serve', () => {
     expect(JSON.parse(written[0]!).error.code).toBe(-32700);
     expect(JSON.parse(written[1]!).id).toBe(9);
   });
+
+  it('rejects JSON null without crashing the session', async () => {
+    const written: string[] = [];
+    await serve(
+      {
+        input: (async function* () {
+          yield 'null\n{"jsonrpc":"2.0","id":9,"method":"ping"}\n';
+        })(),
+        write: (line) => written.push(line),
+      },
+      tools, INFO,
+    );
+    expect(JSON.parse(written[0]!).error.code).toBe(-32600);
+    expect(JSON.parse(written[1]!).id).toBe(9);
+  });
+
+  it('decodes a multibyte id split between Buffer chunks', async () => {
+    const written: string[] = [];
+    const body = Buffer.from('{"jsonrpc":"2.0","id":"€","method":"ping"}\n');
+    const splitAt = body.indexOf(0xe2) + 1;
+    await serve(
+      {
+        input: (async function* () {
+          yield body.subarray(0, splitAt);
+          yield body.subarray(splitAt);
+        })(),
+        write: (line) => written.push(line),
+      },
+      tools, INFO,
+    );
+    expect(JSON.parse(written[0]!).id).toBe('€');
+  });
 });
 
 describe('what the payload refuses to leave out', () => {
@@ -243,9 +321,11 @@ describe('what the payload refuses to leave out', () => {
 
   it('carries the limits on every tool, not just the alarming ones', async () => {
     for (const name of ['contested_markets', 'market_record', 'winning_side', 'repeat_winners', 'wallet_record', 'resolution_queue']) {
-      const args = name === 'wallet_record' ? { address: '0x1' }
+      const args = name === 'wallet_record' ? { address: WALLET }
         : name.includes('market_record') || name === 'winning_side' ? { market: '0xabc' } : {};
       const { payload } = await call(name, args);
+      expect(payload).toHaveProperty('evidence');
+      expect(payload.caveats).toBeInstanceOf(Array);
       expect(payload.limits.join(' ')).toMatch(/tallies, not intent/);
       expect(payload.limits.join(' ')).toMatch(/no proposer, disputer or voter is read/);
     }
@@ -260,8 +340,33 @@ describe('what the payload refuses to leave out', () => {
 
   it('reports the floor the subgraph needed, because it changes what was read', async () => {
     const { payload } = await call('winning_side', { market: '0xabc' });
-    expect(payload.concentration.positionsBelowTokensNotRequested).toBe(1000);
-    expect(payload.limits.join(' ')).toContain('below 1000 tokens were never requested');
+    expect(payload.concentration.positionsAtOrBelowTokensNotRequested).toBe(1000);
+    expect(payload.limits.join(' ')).toContain('at or below 1000 tokens were never requested');
+  });
+
+  it('omits a winner list when coverage is unknown', async () => {
+    const unknown = recuseTools({
+      ...engine,
+      async winners() {
+        return assessment({
+          winners: undefined,
+          tradeIndexCoverage: { status: 'unknown', reason: 'head unavailable' },
+          caveats: ['winning side not counted: head unavailable'],
+        });
+      },
+    });
+    const res = await dispatch(
+      {
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'winning_side', arguments: { market: 'x' } },
+      },
+      unknown, INFO,
+    );
+    const result = res?.result as { content: Array<{ text: string }> };
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.winningSideRead).toBe(false);
+    expect(payload).not.toHaveProperty('winners');
+    expect(payload.tradeIndexCoverage.status).toBe('unknown');
   });
 
   it('never states a win count without the markets it is out of', async () => {
@@ -273,6 +378,14 @@ describe('what the payload refuses to leave out', () => {
     expect(payload.marketsScored).toBe(20);
   });
 
+  it('carries the trade-index boundary on a wallet history', async () => {
+    const { payload } = await call('wallet_record', { address: WALLET });
+    expect(payload.tradeIndex).toEqual({
+      status: 'known',
+      lastTradeAt: '2026-01-05T22:05:45.000Z',
+    });
+  });
+
   it('separates markets it could not read from markets nobody won', async () => {
     const { payload } = await call('repeat_winners');
     const caveats = payload.caveats.join(' ');
@@ -281,11 +394,13 @@ describe('what the payload refuses to leave out', () => {
     expect(caveats).toContain('2 contested markets could not be read');
     expect(caveats).toContain('18 markets returned no position above the floor');
     expect(caveats).toContain('4 contested markets have not settled');
+    expect(caveats).toContain('3 empty market readings had unknown trade-index coverage');
+    expect(caveats).toContain('2 malformed winning-position rows were omitted');
   });
 
   it('reports the floor range, not just the highest one it hit', async () => {
     const { payload } = await call('repeat_winners');
-    expect(payload.caveats.join(' ')).toContain('under 1000 tokens were never requested');
+    expect(payload.caveats.join(' ')).toContain('at or below 1000 tokens were never requested');
     expect(payload.caveats.join(' ')).toContain('6 markets needed a floor up to 100000');
   });
 
@@ -314,6 +429,8 @@ describe('what the payload refuses to leave out', () => {
   it('reports a miss as a miss rather than as the first row of something else', async () => {
     const { payload } = await call('market_record', { market: 'missing' });
     expect(payload.found).toBe(false);
+    expect(payload.caveats).toBeInstanceOf(Array);
+    expect(payload.evidence).toContain('catalogue');
     expect(payload.limits.join(' ')).toContain('reported as a miss');
   });
 
@@ -328,5 +445,7 @@ describe('what the payload refuses to leave out', () => {
     expect(payload.showing).toBe(1);
     const withNull = await call('contested_markets', { limit: null });
     expect(withNull.payload.showing).toBe(1);
+    const malformed = await call('contested_markets', { limit: '10' });
+    expect(malformed.isError).toBe(true);
   });
 });

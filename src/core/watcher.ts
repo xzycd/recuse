@@ -16,6 +16,7 @@ import { appendEvents, readSeen, readWatchlist, writeSeen } from './store.js';
 import { compare, passesFilters } from './watch.js';
 import { deliver } from './notify.js';
 import { fetchContestedMarkets, fetchMarket } from '../sources/gamma.js';
+import { redactMessage } from './safe.js';
 import type { EventKind, Seen, WatchEvent } from './watch.js';
 import type { Market } from '../types.js';
 
@@ -46,6 +47,18 @@ export interface PassResult {
   undelivered: number;
 }
 
+/** Decide whether a pass actually established a usable baseline. */
+export function baselineAfterPass(
+  existing: string | undefined,
+  answered: boolean,
+  now: Date,
+): { baselineAt?: string; established: boolean } {
+  if (existing) return { baselineAt: existing, established: false };
+  return answered
+    ? { baselineAt: now.toISOString(), established: true }
+    : { established: false };
+}
+
 /**
  * Attach who held what to an event.
  *
@@ -72,7 +85,9 @@ function detailCache() {
         )
         // An alert that arrives without the extra detail beats an alert that
         // does not arrive, so this never propagates.
-        .catch((err: Error) => ({ detailFailed: err.message ?? 'holder lookup failed' }));
+        .catch((err: Error) => ({
+          detailFailed: redactMessage(err.message ?? 'holder lookup failed'),
+        }));
       cache.set(market.conditionId, pending);
     }
 
@@ -115,7 +130,7 @@ export async function runPass(opts: PassOptions): Promise<PassResult> {
         found.set(market.conditionId, { market, origin: 'discovery' });
       }
     } catch (err) {
-      failed.push(`discovery scan: ${(err as Error).message ?? 'failed'}`);
+      failed.push(`discovery scan: ${redactMessage((err as Error).message ?? 'failed')}`);
     }
   }
 
@@ -142,10 +157,16 @@ export async function runPass(opts: PassOptions): Promise<PassResult> {
     events.push(opts.detail ? await addDetail(event, market) : event);
   }
 
-  // Persisted before anything is delivered. A webhook that hangs must not cause
-  // the same event to fire again on the next pass.
-  await writeSeen({ baselineAt: state.baselineAt ?? now.toISOString(), markets: next });
+  // The log is the durable fact and is written before the checkpoint. If the
+  // second write fails, the next pass may repeat an event, which is visible and
+  // recoverable. Writing the checkpoint first could lose the event forever.
   await appendEvents(events);
+  const passAnswered = found.size > 0 || failed.length === 0;
+  const baseline = baselineAfterPass(state.baselineAt, passAnswered, now);
+  await writeSeen({
+    ...(baseline.baselineAt ? { baselineAt: baseline.baselineAt } : {}),
+    markets: next,
+  });
 
   let undelivered = 0;
   if (opts.webhook) {
@@ -159,7 +180,7 @@ export async function runPass(opts: PassOptions): Promise<PassResult> {
     events,
     polled: found.size,
     failed,
-    baseline: !baselineDone,
+    baseline: baseline.established,
     suppressed,
     undelivered,
   };
@@ -181,8 +202,10 @@ export interface LoopOptions extends PassOptions {
  */
 export async function runLoop(opts: LoopOptions): Promise<void> {
   let running = true;
+  const stopped = new AbortController();
   void opts.stop.then(() => {
     running = false;
+    stopped.abort();
   });
 
   while (running) {
@@ -195,7 +218,7 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       await opts.onPass({
         events: [],
         polled: 0,
-        failed: [`pass failed: ${(err as Error).message ?? 'unknown'}`],
+        failed: [`pass failed: ${redactMessage((err as Error).message ?? 'unknown')}`],
         baseline: false,
         suppressed: 0,
         undelivered: 0,
@@ -205,11 +228,13 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
     if (!running) break;
 
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, opts.intervalMs);
-      void opts.stop.then(() => {
+      const wake = () => {
         clearTimeout(timer);
+        stopped.signal.removeEventListener('abort', wake);
         resolve();
-      });
+      };
+      const timer = setTimeout(wake, opts.intervalMs);
+      stopped.signal.addEventListener('abort', wake, { once: true });
     });
   }
 }

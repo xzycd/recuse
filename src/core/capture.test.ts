@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   caveatsFor, concentration, leadingSide, observableSide, repeatPlayers, repeatWinners,
-  tradeConcentration, winningSide,
+  sideForIndex, tradeConcentration, winningSide,
 } from './capture.js';
 import type { Holder, Market, Side, Winner } from '../types.js';
 
@@ -13,7 +13,7 @@ function holder(address: string, side: Side, size: number, name?: string): Holde
   return { address, side, size, value: size, name };
 }
 
-function market(prices: number[]): Market {
+function market(prices: Array<number | undefined>): Market {
   return {
     conditionId: '0x1',
     slug: 's',
@@ -41,9 +41,36 @@ describe('leadingSide', () => {
     expect(leadingSide(market([0.99, 0.01]))).toEqual({ side: 'YES', settled: false });
   });
 
+  it('requires a complete binary payout before calling a market settled', () => {
+    expect(leadingSide(market([0, 0.7]))).toEqual({ side: 'NO', settled: false });
+    expect(leadingSide(market([0.5, 0.5]))).toBeUndefined();
+    expect(leadingSide(market([1, undefined]))).toBeUndefined();
+  });
+
+  it('uses the market labels rather than assuming outcome zero is yes', () => {
+    const reversed = market([1, 0]);
+    reversed.outcomes = ['No', 'Yes'];
+    expect(leadingSide(reversed)).toEqual({ side: 'NO', settled: true });
+  });
+
   it('returns undefined when prices are missing', () => {
     expect(leadingSide(market([]))).toBeUndefined();
     expect(leadingSide(market([0.5]))).toBeUndefined();
+  });
+});
+
+describe('sideForIndex', () => {
+  it('rejects fractional, negative and extra outcome indices', () => {
+    const m = market([0.5, 0.5]);
+    expect(sideForIndex(m, 0.5)).toBeUndefined();
+    expect(sideForIndex(m, -1)).toBeUndefined();
+    expect(sideForIndex(m, 2)).toBeUndefined();
+  });
+
+  it('does not guess yes or no on a multi-outcome market', () => {
+    const m = market([0.3, 0.3, 0.4]);
+    m.outcomes = ['A', 'B', 'C'];
+    expect(sideForIndex(m, 0)).toBeUndefined();
   });
 });
 
@@ -112,7 +139,7 @@ describe('caveatsFor, on a reading the trade index never reached', () => {
     expect(out[0]).toContain('not read rather than found empty');
   });
 
-  it('leads the winner caveats, because it says that reading never happened', () => {
+  it('does not describe a floor from a reading that never happened', () => {
     const out = caveatsFor({
       holderCount: 5,
       holdersTruncated: false,
@@ -120,11 +147,8 @@ describe('caveatsFor, on a reading the trade index never reached', () => {
       beyondIndex: '2026-01-05T22:05:45.000Z',
       winnerFloor: 1000,
     });
-    // A floor describes what a reading left out. This one says there was no
-    // reading, so it has to come first of the two or it gets read as a detail.
-    expect(out.findIndex((c) => c.includes('trade index'))).toBeLessThan(
-      out.findIndex((c) => c.includes('omits positions under')),
-    );
+    expect(out.some((c) => c.includes('trade index'))).toBe(true);
+    expect(out.some((c) => c.includes('omits positions at or below'))).toBe(false);
   });
 
   it('says nothing when the reading is inside the index', () => {
@@ -166,7 +190,7 @@ describe('repeatWinners', () => {
       [{ market: 'a', winners: [winner('0xa', 10, 5), winner('0xa', 99, 1)] }],
       1,
     );
-    expect(regulars[0]).toMatchObject({ wins: 1, tokens: 10, markets: ['a'] });
+    expect(regulars[0]).toMatchObject({ wins: 1, tokens: 109, paid: 6, markets: ['a'] });
   });
 
   it('ranks by wins first and money second', () => {
@@ -228,6 +252,7 @@ describe('repeatPlayers', () => {
       1,
     );
     expect(players[0]?.appearances).toBe(2);
+    expect(players[0]).toMatchObject({ losses: 2, size: 200 });
   });
 
   it('skips markets with no decided loser', () => {
@@ -355,7 +380,7 @@ describe('caveatsFor, winning side', () => {
       holderCount: 5, holdersTruncated: false, settled: true,
       winnerFloor: 1000,
     });
-    expect(read.some((c) => c.includes('omits positions under 1000'))).toBe(true);
+    expect(read.some((c) => c.includes('omits positions at or below 1000'))).toBe(true);
     expect(read.some((c) => c.includes('not rebuilt'))).toBe(false);
   });
 });

@@ -43,8 +43,12 @@ describe('toPosition', () => {
     expect(toPosition({ ...raw, quantityBought: undefined })).toBeUndefined();
   });
 
-  it('treats a missing numeric field as zero rather than NaN', () => {
-    const p = toPosition({ ...raw, netValue: undefined })!;
-    expect(p.netSpent).toBe(0);
+  it('drops a row with a missing financial field rather than inventing zero', () => {
+    expect(toPosition({ ...raw, netValue: undefined })).toBeUndefined();
+    expect(toPosition({ ...raw, quantitySold: 'not-a-number' })).toBeUndefined();
+  });
+
+  it('drops internally inconsistent position arithmetic', () => {
+    expect(toPosition({ ...raw, netQuantity: '1' })).toBeUndefined();
   });
 });

@@ -39,10 +39,11 @@ export interface Market {
   negRisk: boolean;
   /** Raw lifecycle from Gamma, e.g. ["proposed","disputed","proposed"]. */
   resolutionSteps: ResolutionStep[];
-  /** CLOB token ids, index-aligned with outcomes. */
-  tokenIds: string[];
+  /** CLOB token ids, index-aligned with outcomes. Invalid entries stay absent. */
+  tokenIds: Array<string | undefined>;
   outcomes: string[];
-  outcomePrices: number[];
+  /** Index-aligned with outcomes. Missing or malformed prices stay absent. */
+  outcomePrices: Array<number | undefined>;
 }
 
 /** A market's resolution lifecycle, parsed into something answerable. */
@@ -68,8 +69,8 @@ export interface Holder {
   side: Side;
   /** Position size in outcome tokens. */
   size: number;
-  /** Position value in USD at current mark. */
-  value: number;
+  /** Position value in USD at current mark, when the price was present. */
+  value?: number;
 }
 
 /*
@@ -118,7 +119,7 @@ export interface Concentration {
   /** Holders seen on this side. The API pages, so this is a floor, not a count. */
   holderCount: number;
   /**
-   * Positions smaller than this many tokens were never requested. Zero means no
+   * Positions no larger than this many tokens were never requested. Zero means no
    * floor was applied. Set on `trades`, where the store needs a lower bound to
    * serve the query at all.
    */
@@ -186,10 +187,12 @@ export interface Regular {
 /**
  * Which evidence a result is standing on.
  *
- * `positions` is what every user gets with no setup. `positions+trades` adds
- * the winning side rebuilt from the subgraph. Both name a source that actually
- * answered, which is the whole point: a partial picture presented as a complete
- * one is the failure this project exists to catch.
+ * `catalogue` means only the market record answered. `positions` adds current
+ * balances, `trades` names the historical trade index, and
+ * `positions+trades` means both position sources answered. Every tier names
+ * what was actually read rather than what was configured, which is the whole
+ * point: a partial picture presented as a complete one is the failure this
+ * project exists to catch.
  *
  * The `+chain` variants were removed rather than left unreachable. They were
  * produced from the presence of RECUSE_RPC_URL rather than from any oracle
@@ -197,7 +200,13 @@ export interface Regular {
  * claim about evidence. Restoring them is one line, once `sources/chain.ts` is
  * wired into an assessment and can say what it read.
  */
-export type EvidenceTier = 'positions' | 'positions+trades';
+export type EvidenceTier = 'catalogue' | 'positions' | 'trades' | 'positions+trades';
+
+/** Whether a winning-side query covered trading through this market's close. */
+export type TradeIndexCoverage =
+  | { status: 'covered'; lastTradeAt: string }
+  | { status: 'beyond'; lastTradeAt: string }
+  | { status: 'unknown'; reason: string };
 
 /** A wallet that bought the side which went on to win. */
 export interface Winner {
@@ -256,6 +265,8 @@ export interface Assessment {
    * it is absent whenever the reading was actually covered.
    */
   tradeIndexEndsAt?: string;
+  /** Machine-readable coverage for the winning-side query, when one was attempted. */
+  tradeIndexCoverage?: TradeIndexCoverage;
   /** Why this reading is incomplete. Empty means it is not. */
   caveats: string[];
   /** Money at stake, used to rank. */

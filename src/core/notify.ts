@@ -47,13 +47,18 @@ export async function deliver(url: string, event: WatchEvent): Promise<Delivery>
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const res = await fetch(url, {
+    const endpoint = safeEndpoint(url);
+    const res = await fetch(endpoint, {
       method: 'POST',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(event),
       signal: controller.signal,
     });
 
+    // Nothing in the response body is part of the protocol. Release it on both
+    // paths so repeated notifications cannot exhaust the connection pool.
+    await res.body?.cancel().catch(() => {});
     if (!res.ok) return { ok: false, reason: `webhook answered ${res.status}` };
     return { ok: true };
   } catch (err) {

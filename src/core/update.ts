@@ -13,9 +13,11 @@
  * market lookup failed.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { readJsonCapped } from '../sources/http.js';
 
 const REGISTRY = 'https://registry.npmjs.org/recuse/latest';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -93,15 +95,29 @@ async function readCache(): Promise<Cache | undefined> {
 }
 
 async function writeCache(latest: string): Promise<void> {
+  let temp: string | undefined;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     const path = cachePath();
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await chmod(dirname(path), 0o700);
     // 0600. There is nothing secret in here today, but this directory is the
     // obvious home for anything stateful added later, and a directory that
     // starts world-readable stays world-readable.
-    await writeFile(path, JSON.stringify({ latest, checkedAt: Date.now() }), { mode: 0o600 });
+    temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    handle = await open(temp, 'wx', 0o600);
+    await handle.writeFile(JSON.stringify({ latest, checkedAt: Date.now() }), 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temp, path);
+    temp = undefined;
+    await chmod(path, 0o600);
   } catch {
     // A read-only or missing home is not a reason to fail a command.
+  } finally {
+    await handle?.close().catch(() => {});
+    if (temp) await unlink(temp).catch(() => {});
   }
 }
 
@@ -112,15 +128,22 @@ async function fetchLatest(): Promise<string> {
   try {
     const res = await fetch(REGISTRY, {
       signal: controller.signal,
+      redirect: 'error',
       headers: { Accept: 'application/vnd.npm.install-v1+json' },
     });
     // 404 is not a failure to reach the registry, it is the registry saying
     // this name has nothing published under it. Someone running from a clone
     // sees this, and telling them the network is broken would be wrong.
-    if (res.status === 404) throw new Error('not published to npm under this name');
-    if (!res.ok) throw new Error(`registry answered ${res.status}`);
+    if (res.status === 404) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error('not published to npm under this name');
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`registry answered ${res.status}`);
+    }
 
-    const body = (await res.json()) as { version?: unknown };
+    const body = await readJsonCapped<{ version?: unknown }>(res, 1024 * 1024);
     const version = body.version;
     if (typeof version !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(version)) {
       throw new Error('registry returned no usable version');

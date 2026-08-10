@@ -1,0 +1,97 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated release tag
+        required: true
+        type: string
+      publish_npm:
+        description: Publish the matching version to npm
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      PUBLISH_NPM: ${{ inputs.publish_npm || 'false' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Validate release ref
+        shell: bash
+        run: |
+          git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"
+          test "$(git cat-file -t "${RELEASE_TAG}")" = tag
+          VERSION="$(node -p "require('./package.json').version")"
+          test "v${VERSION}" = "${RELEASE_TAG}"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${RELEASE_TAG}^{commit}" origin/main
+
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit signatures
+      - run: npm run check
+
+      - name: Pack checksummed artifact
+        shell: bash
+        run: |
+          mkdir release
+          npm pack --pack-destination release
+          sha256sum release/*.tgz > release/SHA256SUMS
+
+      - name: Publish to npm with provenance
+        if: env.PUBLISH_NPM == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "recuse@${VERSION}" version >/dev/null 2>&1; then
+            echo "recuse@${VERSION} is already published"
+            exit 0
+          fi
+          npm publish --provenance --access public
+
+      - name: Explain npm skip
+        if: env.PUBLISH_NPM != 'true'
+        run: echo "npm publish was not requested"
+
+      - name: Create or refresh GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" release/*.tgz release/SHA256SUMS --clobber
+          else
+            gh release create "${RELEASE_TAG}" release/*.tgz release/SHA256SUMS \
+              --verify-tag --generate-notes --title "${RELEASE_TAG}"
+          fi

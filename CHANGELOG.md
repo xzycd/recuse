@@ -14,7 +14,7 @@ Dates are the day the work landed, not the day it was published.
 
 In a 600 market scan, 25 of 38 contested markets closed after that head. This is the failure this project exists to catch, arriving from the one direction nobody was watching: not a scan that swallowed its errors, but a source that had no errors to report.
 
-The head is now read once per run, from an unfiltered sorted query that costs nothing, and any market closing after it is reported as not read. The table says so instead of the old line, `--json` carries `tradeIndexEndsAt` beside the empty array, and the MCP payload sets `winningSideRead: false` and says an empty list there never means nobody won. A head that cannot be read produces no claim in either direction, because not knowing how far the index reaches is not the same as knowing it reaches this market.
+The head is now read once per run, from an unfiltered sorted query that costs nothing, and any market closing after it is reported as not read. The table says so instead of the old line, `--json` omits the unread winner list and carries structured `tradeIndexCoverage`, and the MCP payload sets `winningSideRead: false`. A head that cannot be read produces no claim in either direction, because not knowing how far the index reaches is not the same as knowing it reaches this market.
 
 Nothing about the losing side, the lifecycle, the queue or the watcher was affected. Those read Gamma and are current. It is only the trade-rebuilt half that stops in January, and now it says so.
 
@@ -29,6 +29,12 @@ Every row carries the markets scored as its denominator, and the denominator is 
 **Two date parsers became one.** `core/dispute.ts` and `core/queue.ts` each had a private one and only `queue` knew that `closedTime` arrives as `2025-07-09 00:30:39+00`, so which fields a module could read depended on which module was asking.
 
 Smaller: `recuse winners` said `? side won` on every market past the trade index, reading the side off the trades it had not fetched rather than off the prices, which were sitting right there and are not in doubt.
+
+**The production pass made failure states explicit.** Missing financial fields are no longer zero, invalid token entries no longer shift outcome indices, duplicate wallet rows are aggregated within a market, and a wallet holding both sides is counted independently of row order. Gamma, the holders API and the subgraph are checked for the response shapes and identifiers each request asked for. Trade-index coverage is checked even when a query returned rows, because a non-empty result can still be partial when a market traded across the stale head. Wallet records carry that same head and state that later trades are absent.
+
+Corrupt state now stops instead of silently becoming an empty watchlist or a new baseline. Snapshot writes use exclusive random temporary files, flush before rename, repair permissions and write the event log before advancing the watcher checkpoint. CLI numbers, subcommands and event kinds are rejected when malformed rather than quietly defaulted. MCP now bounds messages, preserves split UTF-8 input, validates ids and parameter containers, redacts tool errors and never replies to notifications.
+
+Node 22 is now the runtime floor. CI covers Node 22 and 24, installs with lifecycle scripts disabled, audits production dependencies, pins actions to commits and has Dependabot tracking both action and npm updates. TypeScript now rejects unused locals and parameters, and type-checks the test suite as well as product code, which makes the existing reachability check a compile-time rule for the smaller cases too.
 
 ## 0.6.1, 2026-08-09
 

@@ -33,6 +33,10 @@ describe('safeText', () => {
     expect(a).toBe(b);
   });
 
+  it('strips directional isolates and Arabic letter marks too', () => {
+    expect(safeText('a\u061cb\u2066c\u2069d')).toBe('abcd');
+  });
+
   it('keeps tabs and newlines as spaces rather than gluing words together', () => {
     expect(safeText('two\twords\nhere')).toBe('two words here');
   });
@@ -48,6 +52,12 @@ describe('safeText', () => {
     const out = safeText('x'.repeat(5000));
     expect(out.length).toBe(300);
     expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('never cuts an astral character into an invalid surrogate at the cap', () => {
+    const out = safeText(`a\u{1F600}b`, 3);
+    expect(out).toBe('a\u{1F600}b');
+    expect(safeText(`aa\u{1F600}b`, 3)).toBe('aa…');
   });
 
   it('returns empty for anything that is not a string', () => {
@@ -98,6 +108,19 @@ describe('redactUrl', () => {
     expect(redactUrl('https://rpc.example.com/?apiKey=secret123')).toContain('apiKey=redacted');
   });
 
+  it('removes a Telegram bot token whose colon makes it unlike a plain API key', () => {
+    const url = 'https://api.telegram.org/bot123456789:AAExampleToken_123456789/sendMessage';
+    const redacted = redactUrl(url);
+    expect(redacted).toBe('https://api.telegram.org/redacted/sendMessage');
+    expect(redacted).not.toContain('AAExampleToken');
+  });
+
+  it('removes a fragment in case a configured endpoint put a credential there', () => {
+    expect(redactUrl('https://rpc.example.com/path#secret-token')).toBe(
+      'https://rpc.example.com/path#redacted',
+    );
+  });
+
   it('removes basic auth credentials', () => {
     expect(redactUrl('https://user:pass@rpc.example.com/')).not.toContain('pass');
   });
@@ -116,6 +139,10 @@ describe('redactMessage', () => {
   it('scrubs a URL embedded in an error string', () => {
     const msg = 'request to https://polygon.example.com/v2/KEY0123456789abcdefgh failed';
     expect(redactMessage(msg)).toBe('request to https://polygon.example.com/v2/redacted failed');
+  });
+
+  it('also strips terminal control characters from remote error text', () => {
+    expect(redactMessage('failed\u001b[2J\rforged')).toBe('failed[2J forged');
   });
 });
 

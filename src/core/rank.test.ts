@@ -6,15 +6,32 @@ const a = (
   question: string, rounds: number, pool: number, wiped?: number, deadline?: string,
 ): Assessment =>
   ({
-    market: { question, slug: question.toLowerCase().replace(/\W+/g, '-'), conditionId: question },
+    market: {
+      question,
+      slug: question.toLowerCase().replace(/\W+/g, '-'),
+      conditionId: question,
+      volume: pool,
+      liquidity: 0,
+      closed: true,
+      active: false,
+      negRisk: false,
+      resolutionSteps: Array.from({ length: rounds }, () => 'disputed'),
+      tokenIds: [],
+      outcomes: [],
+      outcomePrices: [],
+    },
     dispute: {
+      conditionId: question,
       rounds, contested: rounds > 0, phase: 'settled',
       steps: Array.from({ length: rounds }, () => 'disputed'),
       deadline: deadline ? new Date(deadline) : undefined,
     },
-    concentration: wiped === undefined ? undefined : { meaning: 'wiped', totalSize: wiped },
+    concentration: wiped === undefined ? undefined : {
+      side: 'NO', meaning: 'wiped', basis: 'balances', topN: 1,
+      topShare: 1, topSize: wiped, totalSize: wiped, holderCount: 1,
+    },
     pool, caveats: [], tier: 'positions', fetchedAt: '',
-  }) as unknown as Assessment;
+  });
 
 const list = [
   a('Iran ceasefire', 3, 200_000_000, 108_600_000, '2026-09-01'),
@@ -53,7 +70,7 @@ describe('sortAssessments', () => {
 
 describe('nextSort', () => {
   it('cycles through every mode and returns to the start', () => {
-    let mode = SORTS[0];
+    let mode: (typeof SORTS)[number] = SORTS[0];
     for (let i = 0; i < SORTS.length; i++) mode = nextSort(mode);
     expect(mode).toBe(SORTS[0]);
   });

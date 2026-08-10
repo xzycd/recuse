@@ -286,7 +286,7 @@ export function renderPlayers(
  *
  * The counterpart to `renderPlayers`, and the numbers are not comparable with
  * it: that table counts balances, this one counts trades, and the footer says
- * so on both. `wins` carries `marketsRead` as its denominator on every row,
+ * so on both. `wins` carries `marketsScored` as its denominator on every row,
  * because "won 5" means nothing without how many were opened.
  */
 export function renderRegulars(
@@ -298,6 +298,7 @@ export function renderRegulars(
     undecided: number;
     empty: number;
     beyondIndex: number;
+    coverageUnknown: number;
     indexHead?: string;
     floorLow: number;
     floorHigh: number;
@@ -305,6 +306,7 @@ export function renderRegulars(
     wallets: number;
     namesAsked: number;
     namesFailed: number;
+    positionsDropped: number;
   },
   style: Style,
 ): string {
@@ -327,6 +329,18 @@ export function renderRegulars(
     );
     if (scan.marketsFailed > 0) {
       lines.push(dim(`${scan.marketsFailed} markets could not be read at all.`, style));
+    }
+    if (scan.empty > 0) {
+      lines.push(dim(`${scan.empty} markets had no position above the floor.`, style));
+    }
+    if (scan.beyondIndex > 0) {
+      lines.push(dim(`${scan.beyondIndex} markets were beyond the trade index and not read.`, style));
+    }
+    if (scan.coverageUnknown > 0) {
+      lines.push(dim(`${scan.coverageUnknown} empty readings had unknown index coverage.`, style));
+    }
+    if (scan.positionsDropped > 0) {
+      lines.push(dim(`${scan.positionsDropped} malformed positions were omitted.`, style));
     }
     return lines.join('\n');
   }
@@ -379,6 +393,7 @@ export function renderRegulars(
   if (scan.marketsFailed > 0) gaps.push(`${scan.marketsFailed} could not be read`);
   if (scan.undecided > 0) gaps.push(`${scan.undecided} not settled yet`);
   if (scan.empty > 0) gaps.push(`${scan.empty} had no position above the floor and are not scored`);
+  if (scan.coverageUnknown > 0) gaps.push(`${scan.coverageUnknown} had unknown index coverage`);
   if (gaps.length > 0) lines.push(dim(`${gaps.join(', ')}.`, style));
 
   // The gap that used to be invisible. These markets were not quiet, they were
@@ -401,9 +416,9 @@ export function renderRegulars(
     lines.push(
       dim(
         scan.floorRaised > 0
-          ? `positions under ${scan.floorLow} tokens were never requested, and ${scan.floorRaised} markets `
+          ? `positions at or below ${scan.floorLow} tokens were never requested, and ${scan.floorRaised} markets `
             + `needed a higher floor, up to ${scan.floorHigh}.`
-          : `positions under ${scan.floorLow} tokens were never requested, so small wins are absent.`,
+          : `positions at or below ${scan.floorLow} tokens were never requested, so small wins are absent.`,
         style,
       ),
     );
@@ -415,6 +430,9 @@ export function renderRegulars(
   }
   if (scan.namesFailed > 0) {
     lines.push(dim(`${scan.namesFailed} names could not be looked up and show as addresses.`, style));
+  }
+  if (scan.positionsDropped > 0) {
+    lines.push(dim(`${scan.positionsDropped} malformed positions were omitted.`, style));
   }
   lines.push(
     dim('from trades, not balances. these wallets redeemed and hold nothing now.', style),
@@ -458,9 +476,11 @@ export function renderWinners(a: Assessment, winners: Winner[], style: Style): s
     // an evidence question, which this file has done once before and stopped.
     lines.push(
       dim(
-        a.tradeIndexEndsAt
-          ? `the winning side was not read. the trade index stops at ${a.tradeIndexEndsAt.slice(0, 10)} `
+        a.tradeIndexCoverage?.status === 'beyond'
+          ? `the winning side was not read. the trade index stops at ${a.tradeIndexCoverage.lastTradeAt.slice(0, 10)} `
             + 'and this market closed after that.'
+          : a.tradeIndexCoverage?.status === 'unknown'
+            ? `the winning side was not read. ${a.tradeIndexCoverage.reason}.`
           : 'no winning positions were returned for this market.',
         style,
       ),
@@ -679,7 +699,7 @@ function signed(n: number): string {
 }
 
 /**
- * One wallet's record, contested markets first.
+ * One wallet's settlement positions, contested markets first.
  *
  * Sorted that way because someone opening this in `recuse` rather than in a
  * generic wallet tracker is here for the disputed ones. The summary reports

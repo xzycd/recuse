@@ -53,6 +53,15 @@ describe('payoutFor', () => {
   it('does not divide by a zero or missing denominator', () => {
     expect(payoutFor({ conditionId: 'x', numerators: [1, 0], denominator: 0 }, 0)).toBeUndefined();
   });
+
+  it('rejects a malformed payout instead of producing impossible proceeds', () => {
+    expect(payoutFor({ conditionId: 'x', numerators: [-1, 2], denominator: 1 }, 0)).toBeUndefined();
+    expect(payoutFor({ conditionId: 'x', numerators: [-1, 2], denominator: 1 }, 1)).toBeUndefined();
+    expect(payoutFor({ conditionId: 'x', numerators: [0.5, 0.5], denominator: 1 }, 0)).toBeUndefined();
+    expect(payoutFor({ conditionId: 'x', numerators: [1, 1], denominator: 1 }, 0)).toBeUndefined();
+    expect(payoutFor({ conditionId: 'x', numerators: [1, 0], denominator: Number.POSITIVE_INFINITY }, 0)).toBeUndefined();
+    expect(payoutFor({ conditionId: 'x', numerators: [1, 0], denominator: 1 }, -1)).toBeUndefined();
+  });
 });
 
 describe('buildLedger', () => {
@@ -103,6 +112,7 @@ describe('buildLedger', () => {
     expect(ledger.open).toBe(1);
     expect(ledger.gain).toBe(0);
     expect(ledger.entries[0]!.gain).toBeUndefined();
+    expect(ledger.entries[0]!.proceeds).toBeUndefined();
   });
 
   it('reports contested markets separately, which is the point of this view', () => {
