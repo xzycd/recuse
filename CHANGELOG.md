@@ -8,6 +8,32 @@ While this is `0.x`, both can change. From `1.0` the JSON shapes are the contrac
 
 Dates are the day the work landed, not the day it was published.
 
+## 0.8.0, 2026-08-10
+
+**The last release found the hole. This one fills it.**
+
+0.7.0 established that the trade index behind the winning side stops at 2026-01-05 and that 25 of 38 contested markets in a 600 market scan closed after it, and taught every surface to say so instead of printing an empty list. That was the right first move and it was still a tool that could not answer the question it exists to answer about anything recent.
+
+Polymarket serves its own trade log, one record per fill, and it is current. `recuse` asks the index first, because where it reaches it counts back to a market's first trade with no floor and no ceiling. Where it does not reach, the log answers, and every reading says which of the two it stood on. On a market the index had covered, the log reproduced its winning side to within 0.2% on every wallet of the top six, in the same order.
+
+`recuse regulars --scan 600` went from 20 markets scored to 38, and from 494 winning wallets to 666.
+
+Two properties of that log decide the shape of everything built on it, and both are stated in every reading rather than assumed away.
+
+`takerOnly` defaults to true. The default view is one side of each fill: a market that returns 11,135 trades returns over 20,000 with it off, and the wallets in the first version were short by up to 40%. HTTP 200, a plausible history, half the volume gone, nothing anywhere saying so. It is set explicitly on every request and there is no option to unset it.
+
+Paging stops at offset 10,000, so the reachable window is the 20,000 most recent fills, and 28 of those 38 markets have more. The way through is a minimum trade size in dollars, the same bargain the index already demanded in tokens: a market read whole above a floor beats the most recent slice of one. The floor that worked travels with the data and is printed under the table. Where even the top of the ladder is not enough, the reading says the history was cut and that its totals are partial rather than cumulative, which is a worse statement than a floor and is not allowed to share a sentence with one.
+
+**`recuse wallet` returned nothing at all for a live wallet.** It read positions from the same index, so a wallet whose trading is all after January came back as `no positions found for this address`, with `"entries": []` over `--json` and a clean empty record over MCP. Measured on one holding 5,811,667 tokens across two contested markets it had lost. It reads the trade log when the index is empty, and the conditions come from the trades themselves, since the index maps token to market only as far as its own head.
+
+Payouts stop at that head too, silently, with `found: 0` and no error. Where the chain payout is unreadable the market's closing prices stand in, and only there. That fallback refuses an open market, refuses a price that does not land on a half, and refuses prices that do not divide a dollar between them, because pricing a live position off an opinion is the failure it would otherwise introduce.
+
+**`exited` is a new result, beside won and lost.** The index was queried for surviving positions only, so a wallet that traded out before settlement never appeared. The log has no such filter and that wallet is ordinary. It was paid nothing on the outcome and calling it a winner would credit it with a market it was not in when the answer landed. Its trading profit stays in the total, because that money moved.
+
+**Caveats wrap instead of being cut.** Every surface printed them clipped to the terminal, so the longest one in the tool, the one naming where the index stops and what was read instead, ended at "so t…" in eighty columns. A caveat exists to let a reader discount the number above it and one cut before its own verb cannot. Cutting is right for a table cell and wrong for a sentence.
+
+Also: a footer claiming 22 of 18 markets were rescued, because one counter was doing the work of two.
+
 ## 0.7.0, 2026-08-09
 
 **Two thirds of the contested set was being reported as markets nobody won.** The subgraph that rebuilds the winning side is about seven months behind the chain. Its last indexed trade is 2026-01-05, and it answers a market it never reached with an empty list and HTTP 200, which is byte for byte how it answers a market nobody traded. `recuse winners` printed "no winning positions were returned for this market" over a $375M market with two dispute rounds, and `--json` handed a consumer `"winners": []`.
