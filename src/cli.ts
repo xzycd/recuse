@@ -78,7 +78,7 @@ serving
 
 options
   --help, -h        show this help
-  --version, -v     print the installed version
+  --version, -v, -V print the installed version
   --json            machine-readable output
   --card            market: a block sized for pasting into a chat
   --plain           force the plain renderer
@@ -182,7 +182,7 @@ export function parseArgs(argv: string[]): Args {
     else if (a === '--no-logo') args.logo = false;
     else if (a === '--no-color' || a === '--no-colour') args.colour = false;
     else if (a === '--help' || a === '-h') args.help = true;
-    else if (a === '--version' || a === '-v') args.version = true;
+    else if (a === '--version' || a === '-v' || a === '-V') args.version = true;
     else if (a === '--once') args.once = true;
     else if (a === '--discover') args.discover = true;
     else if (a === '--no-detail') args.detail = false;
@@ -994,6 +994,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 2;
   }
 
+  // Ahead of help and every networked command. The plain form prints only the
+  // installed number so scripts can compare it without stripping a banner.
   if (args.version) {
     if (args.json) emitJson({ version: version() });
     else emit(version());

@@ -32,7 +32,9 @@ Payouts stop at that head too, silently, with `found: 0` and no error. Where the
 
 **Caveats wrap instead of being cut.** Every surface printed them clipped to the terminal, so the longest one in the tool, the one naming where the index stops and what was read instead, ended at "so t…" in eighty columns. A caveat exists to let a reader discount the number above it and one cut before its own verb cannot. Cutting is right for a table cell and wrong for a sentence.
 
-Also: a footer claiming 22 of 18 markets were rescued, because one counter was doing the work of two.
+Also: `recuse --version`, which every other CLI has and this one answered with `unknown option`. It prints the number and nothing else, because the one thing it is for is being compared against something.
+
+And a footer claiming 22 of 18 markets were rescued, because one counter was doing the work of two.
 
 ## 0.7.0, 2026-08-09
 
