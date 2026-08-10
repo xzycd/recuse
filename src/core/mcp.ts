@@ -250,17 +250,31 @@ export function recuseTools(engine: Engine): McpTool[] {
           question: a.market.question,
           concentration: share(conc),
           winners: (a.winners ?? []).map(winnerRow),
-          // Absent unless the reading ran past the index. Present, it means the
-          // empty winners array above says nothing about who held this side.
-          ...(a.tradeIndexEndsAt
-            ? { winningSideRead: false, tradeIndexEndsAt: a.tradeIndexEndsAt }
-            : { winningSideRead: true }),
+          // Whether the side was read at all, and by what. The index falling
+          // short no longer means nothing read it: the trade log answers past
+          // that point, and `tradeLog` present is what says so. False here is
+          // the one case where the empty winners array above says nothing
+          // whatever about who held this side.
+          winningSideRead: !a.tradeIndexEndsAt || a.tradeLog !== undefined,
+          readFrom: a.tradeLog ? 'trade log' : 'trade index',
+          ...(a.tradeIndexEndsAt ? { tradeIndexEndsAt: a.tradeIndexEndsAt } : {}),
+          // The terms these numbers came on. `floor` is a minimum trade size in
+          // dollars, and `truncated` means the log itself was cut at the most
+          // recent `read` trades of a longer history, which makes every total
+          // above partial rather than cumulative.
+          ...(a.tradeLog ? { tradeLog: a.tradeLog } : {}),
           evidence: a.tier,
           caveats: a.caveats,
           limits: [
             ...ALWAYS,
-            ...(a.tradeIndexEndsAt
-              ? [`the trade index stops at ${a.tradeIndexEndsAt.slice(0, 10)} and this market closed after that, so an empty winners list here means not read and never means nobody won`]
+            ...(a.tradeIndexEndsAt && !a.tradeLog
+              ? [`the trade index stops at ${a.tradeIndexEndsAt.slice(0, 10)} and this market closed after that, and nothing else could read it either, so an empty winners list here means not read and never means nobody won`]
+              : []),
+            ...(a.tradeLog
+              ? [`the trade index does not reach this market, so the winning side was rebuilt from ${a.tradeLog.read} trades in the log${a.tradeLog.floor > 0 ? `, counting only trades of $${a.tradeLog.floor} or more` : ''}`]
+              : []),
+            ...(a.tradeLog?.truncated
+              ? ['the log was cut at the most recent trades it will page to, so these totals are partial and are not cumulative buys']
               : []),
             'these are cumulative buys, not balances. a balance is a position now and a winner\'s is zero',
             ...(conc?.floor
@@ -325,7 +339,13 @@ export function recuseTools(engine: Engine): McpTool[] {
               ? [`${s.empty} markets returned no position above the floor and are not in the denominator`]
               : []),
             ...(s.beyondIndex > 0
-              ? [`${s.beyondIndex} contested markets closed after the trade index stops${s.indexHead ? ` at ${s.indexHead.slice(0, 10)}` : ''} and were not read at all, so this covers older markets and not recent ones`]
+              ? [`${s.beyondIndex} contested markets closed after the trade index stops${s.indexHead ? ` at ${s.indexHead.slice(0, 10)}` : ''}${s.fromLogPastIndex > 0 ? `, and ${s.fromLogPastIndex} of those were rebuilt from the trade log instead${s.logFloorHigh > 0 ? ` counting only trades of $${s.logFloorLow} or more` : ''}` : ' and none of them could be read'}`]
+              : []),
+            ...(s.beyondIndex - s.fromLogPastIndex > 0
+              ? [`${s.beyondIndex - s.fromLogPastIndex} contested markets were not read by anything and are in no wallet's count`]
+              : []),
+            ...(s.logCut > 0
+              ? [`${s.logCut} markets had more trades than the log will page to, so their wallet totals are the most recent trades rather than every trade`]
               : []),
             ...(s.undecided > 0 ? [`${s.undecided} contested markets have not settled and were skipped`] : []),
             ...(s.floorHigh > 0
@@ -369,10 +389,15 @@ export function recuseTools(engine: Engine): McpTool[] {
         return {
           address: ledger.address,
           name: ledger.name,
-          resolved: ledger.won + ledger.lost + ledger.split,
+          resolved: ledger.won + ledger.lost + ledger.split + ledger.exited,
           won: ledger.won,
           lost: ledger.lost,
           split: ledger.split,
+          // Settled markets this wallet had already traded out of. Reported
+          // rather than folded into either side, because a summariser adding
+          // won to lost and finding it short of resolved is asking the right
+          // question, and one that never sees the gap is not.
+          exited: ledger.exited,
           open: ledger.open,
           netUsd: ledger.gain,
           contestedMarkets: ledger.contested,
@@ -393,6 +418,7 @@ export function recuseTools(engine: Engine): McpTool[] {
           limits: [
             ...ALWAYS,
             'a profitable record is a record of being right, and this tool cannot tell that from anything else',
+            'exited means the position was closed before the market settled, so it neither won nor lost and its profit came from trading',
             'only the positions read are summarised here, so the totals cover the positions listed and not the wallet\'s whole history',
           ],
         };
@@ -453,8 +479,15 @@ export function recuseTools(engine: Engine): McpTool[] {
  * UMA hands down 50/50 outcomes, and calling one a loss is wrong on both sides
  * of the market at once.
  */
-function result(entry: { resolved: boolean; payout?: number }): 'open' | 'won' | 'lost' | 'split' | 'unknown' {
+function result(
+  entry: { resolved: boolean; payout?: number; net: number },
+): 'open' | 'won' | 'lost' | 'split' | 'exited' | 'unknown' {
   if (!entry.resolved) return 'open';
+  // Ahead of the payout, and the reason is a claim rather than a display
+  // choice. A wallet that sold out of the winning side before settlement was
+  // paid nothing on the outcome, and a summariser handed `won` here would say
+  // it won a market it was not in when the answer landed.
+  if (entry.net <= 0) return 'exited';
   if (entry.payout === undefined) return 'unknown';
   if (entry.payout === 1) return 'won';
   if (entry.payout === 0) return 'lost';

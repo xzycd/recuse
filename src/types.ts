@@ -256,6 +256,20 @@ export interface Assessment {
    * it is absent whenever the reading was actually covered.
    */
   tradeIndexEndsAt?: string;
+  /**
+   * Set when `winners` was rebuilt from the data-api trade log rather than from
+   * the index, which is what happens whenever `tradeIndexEndsAt` is present and
+   * the log could answer.
+   *
+   * The two fields answer different questions and a consumer needs both. The
+   * one above says the index did not cover this market. This one says whether
+   * anything covered it instead, and on what terms: `floor` is the minimum
+   * trade size in dollars that made the read servable, `read` is how many
+   * trades went into it, and `truncated` means the log itself was cut at the
+   * most recent `read` of a longer history, which makes every total here a
+   * partial rather than a cumulative one.
+   */
+  tradeLog?: { floor: number; read: number; truncated: boolean };
   /** Why this reading is incomplete. Empty means it is not. */
   caveats: string[];
   /** Money at stake, used to rank. */

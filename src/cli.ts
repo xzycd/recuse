@@ -495,6 +495,11 @@ async function runWinners(args: Args): Promise<number> {
       // Travels with the empty array it explains. Without it a consumer reads
       // `"winners": []` as a market nobody won.
       ...(assessment.tradeIndexEndsAt ? { tradeIndexEndsAt: assessment.tradeIndexEndsAt } : {}),
+      // Present only when the log answered, so its absence beside a
+      // `tradeIndexEndsAt` means nothing covered this market at all. The floor
+      // and the cut are the terms these numbers came on and a consumer that
+      // drops them is quoting a total that was never claimed.
+      ...(assessment.tradeLog ? { tradeLog: assessment.tradeLog } : {}),
       caveats: assessment.caveats,
     });
     return 0;
