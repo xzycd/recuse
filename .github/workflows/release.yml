@@ -65,7 +65,8 @@ jobs:
         run: |
           mkdir release
           npm pack --pack-destination release
-          sha256sum release/*.tgz > release/SHA256SUMS
+          cd release
+          sha256sum *.tgz > SHA256SUMS
 
       - name: Publish to npm with provenance
         if: env.PUBLISH_NPM == 'true'
