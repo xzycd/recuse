@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDisallowedAttribution } from './attribution.mjs';
 import { unreachable } from './reachable.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -172,9 +173,25 @@ for (const { file, name } of unreachable(sourceText, ROOTS)) {
 }
 
 // Commit trailers. The repo carries one author and no tool attribution.
+// GitHub squash merges can repeat that author's other verified identity as a
+// co-author. That is redundant metadata, not a second author, so accept it only
+// when the exact identity already authored a commit and every author name in the
+// history is the same.
+const knownAuthors = new Set(
+  execFileSync('git', ['log', '--format=%an <%ae>'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean),
+);
+const authorNames = new Set(
+  execFileSync('git', ['log', '--format=%an'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean),
+);
 const log = execFileSync('git', ['log', '--format=%B'], { cwd: ROOT, encoding: 'utf8' });
 for (const line of log.split('\n')) {
-  if (/^(co-authored-by|generated with|🤖)/i.test(line.trim())) {
+  if (isDisallowedAttribution(line, knownAuthors, authorNames)) {
     failures.push(`git log  attribution trailer\n    ${line.trim()}`);
   }
 }
