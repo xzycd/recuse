@@ -60,6 +60,7 @@ const USAGE = `usage
   recuse update               check whether a newer version was published
   recuse serve --mcp          answer over MCP, for an agent rather than a person
   recuse --help
+  recuse --version            print the installed version and nothing else
 
 watching
   recuse watch                poll for resolutions that move, until stopped
@@ -120,6 +121,7 @@ interface Args {
   logo: boolean;
   colour?: boolean;
   help: boolean;
+  version: boolean;
   once: boolean;
   intervalMs: number;
   discover: boolean;
@@ -138,7 +140,7 @@ const MIN_INTERVAL_MS = 30_000;
 export function parseArgs(argv: string[]): Args {
   const args: Args = {
     command: 'radar', json: false, plain: false, limit: 25, scan: 600,
-    all: false, winners: false, logo: true, help: false,
+    all: false, winners: false, logo: true, help: false, version: false,
     once: false, intervalMs: 300_000, discover: false, detail: true, card: false,
     mcp: false,
   };
@@ -153,6 +155,7 @@ export function parseArgs(argv: string[]): Args {
     else if (a === '--no-logo') args.logo = false;
     else if (a === '--no-color' || a === '--no-colour') args.colour = false;
     else if (a === '--help' || a === '-h') args.help = true;
+    else if (a === '--version' || a === '-V') args.version = true;
     else if (a === '--once') args.once = true;
     else if (a === '--discover') args.discover = true;
     else if (a === '--no-detail') args.detail = false;
@@ -882,6 +885,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 
   if (args.theme === 'list') return runThemeList(args);
+
+  // Ahead of the help, and printing the number alone. Every other surface here
+  // wraps its answer in a banner; this one gets read by a script comparing it
+  // against something, and the installed binary is the copy that matters.
+  if (args.version) {
+    emit(version());
+    return 0;
+  }
 
   if (args.help) {
     const style = detectStyle({ colour: args.colour, theme: args.theme });

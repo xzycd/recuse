@@ -56,7 +56,7 @@ tools/
 ## Commands
 
 ```sh
-npm test          # 364 tests, no network, sub-second
+npm test          # 366 tests, no network, sub-second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
 npm run check     # the house rules below, enforced
