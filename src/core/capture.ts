@@ -13,7 +13,7 @@
  */
 
 import type {
-  Concentration, Holder, Market, Regular, RepeatPlayer, Side, Winner,
+  Concentration, Holder, Market, Regular, RepeatPlayer, Side, TradeLogCoverage, Winner,
 } from '../types.js';
 
 /** Map a binary outcome index onto YES or NO without guessing on extra outcomes. */
@@ -167,7 +167,7 @@ export function tradeConcentration(
  * difference. Nothing here is modelled or inferred from a price.
  *
  * `wallets` is the denominator and travels with the rest, because this is a sum
- * over the positions that came back above the subgraph's floor, not over every
+ * over the positions that came back above the trade source's floor, not over every
  * position that existed. Presented without it, the total reads like the whole
  * winning side, which is exactly the mistake this module was written to stop.
  */
@@ -272,7 +272,7 @@ export interface WinningOutcome {
  * The mirror of `repeatPlayers`, and the reason it has to exist separately.
  * That function counts losses because balances only ever show losers. This one
  * counts wins, which balances cannot see at all, so its input is rebuilt from
- * trades by the caller, one subgraph query per market.
+ * trades by the caller, one trade-source read per market.
  *
  * `net` is the filter, not `bought`. A wallet that bought the winning side and
  * sold out before resolution was not paid, and counting it as a win would make
@@ -347,12 +347,19 @@ export function caveatsFor(opts: {
   winnerFloor?: number;
   winnersTruncated?: boolean;
   /**
-   * The trade index stops before this market closed, so nothing was read about
-   * its winning side. ISO time of the last indexed trade.
+   * The trade index stops before this market closed. The live log may still
+   * answer its winning side. ISO time of the last indexed trade.
    */
   beyondIndex?: string;
   /** Why index coverage could not be established for an empty result. */
   coverageUnknown?: string;
+  /**
+   * Set when the winning side came from the data-api trade log rather than from
+   * the index. Its floor is a minimum trade size in dollars, not a minimum
+   * position in tokens, so it cannot share a field with `winnerFloor` however
+   * similar the two lines read.
+   */
+  tradeLog?: TradeLogCoverage;
 }): string[] {
   const out: string[] = [];
 
@@ -374,23 +381,52 @@ export function caveatsFor(opts: {
     if (opts.beyondIndex) {
       out.push(
         `the trade index stops at ${opts.beyondIndex.slice(0, 10)} and this market closed after that, `
-          + 'so the winning side was not read rather than found empty',
+          + (opts.tradeLog
+            ? 'so the winning side below was rebuilt from the trade log instead'
+            : 'so the winning side was not read rather than found empty'),
       );
     } else if (opts.coverageUnknown) {
-      out.push(`winning side not counted: ${opts.coverageUnknown}`);
+      out.push(
+        opts.tradeLog
+          ? `trade index coverage is unknown: ${opts.coverageUnknown}; the winning side below came from the trade log`
+          : `winning side not counted: ${opts.coverageUnknown}`,
+      );
+    }
+
+    if (opts.tradeLog) {
+      out.push(
+        opts.tradeLog.floor > 0
+          ? `winning side is from the trade log and omits trades under $${opts.tradeLog.floor}`
+          : `winning side is from the trade log, all ${opts.tradeLog.read} trades on this market`,
+      );
+      // Distinct from the floor, and worse. A floor drops small trades and says
+      // which; this drops the older half of the market and keeps the recent
+      // one, so a cumulative total built on it is not cumulative.
+      if (opts.tradeLog.truncated) {
+        out.push(
+          `the trade log was cut at the ${opts.tradeLog.read} most recent trades, `
+            + 'so these totals are partial rather than cumulative',
+        );
+      }
+      if (opts.tradeLog.dropped > 0) {
+        out.push(`${opts.tradeLog.dropped} malformed trades were omitted from the winning side`);
+      }
+      if (opts.winnersTruncated) {
+        out.push('more winning positions were rebuilt than were requested');
+      }
     } else if (opts.winnersFailed) {
       // The distinction that matters: the winning side was not read, as opposed
       // to being read and found empty. Saying nothing here would leave the
       // losing side looking like the whole market.
       out.push(`winning side not rebuilt: ${opts.winnersFailed}`);
-    } else if (opts.winnerFloor) {
+    } else if (opts.winnerFloor && !opts.beyondIndex && !opts.coverageUnknown) {
       out.push(
         `winning side is from trades, not balances, and omits positions at or below ${opts.winnerFloor} tokens`,
       );
       if (opts.winnersTruncated) {
         out.push('more winning positions exist above that floor than were requested');
       }
-    } else {
+    } else if (!opts.beyondIndex && !opts.coverageUnknown) {
       out.push('settled market: winners redeemed and left the book, only losers hold balances');
     }
   } else {

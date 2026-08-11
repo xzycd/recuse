@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   clip, count, displayName, label, meter, money, padEnd, padStart, pct, shortAddress, until,
-  widthOf,
+  widthOf, wrap,
 } from './format.js';
 
 describe('clip', () => {
@@ -184,5 +184,39 @@ describe('label', () => {
 
   it('leaves a short address alone', () => {
     expect(shortAddress('0x1234')).toBe('0x1234');
+  });
+});
+
+describe('wrapping a sentence to the terminal', () => {
+  it('breaks at spaces and never exceeds the width', () => {
+    const lines = wrap('the trade index stops at 2026-01-05 and this market closed after that', 20);
+    expect(lines.every((l) => widthOf(l) <= 20)).toBe(true);
+    expect(lines.join(' ')).toBe('the trade index stops at 2026-01-05 and this market closed after that');
+  });
+
+  it('keeps a sentence that already fits on one line', () => {
+    expect(wrap('short enough', 40)).toEqual(['short enough']);
+  });
+
+  it('cuts a single word too long to fit rather than overflowing', () => {
+    // The only things this long here are addresses and hashes, and one of
+    // those wrapped across two lines reads as two identifiers.
+    const line = wrap('0x950ea3d54a52dca7ec54e7a0338812450268f8e5', 12)[0]!;
+    expect(widthOf(line)).toBe(12);
+    expect(line.endsWith('\u2026')).toBe(true);
+  });
+
+  it('measures by code point, so an emoji costs one cell and not two', () => {
+    // Same arithmetic as `clip`. Counting UTF-16 units here would wrap a line
+    // early for every astral character in it.
+    const lines = wrap('aa \u{1F600} bb', 5);
+    expect(lines.every((l) => widthOf(l) <= 5)).toBe(true);
+  });
+
+  it('returns one empty line rather than nothing for empty text', () => {
+    // A caveat block indexes the first line unconditionally, and an empty
+    // array there prints "undefined".
+    expect(wrap('', 20)).toEqual(['']);
+    expect(wrap('anything', 0)).toEqual([]);
   });
 });

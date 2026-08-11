@@ -157,14 +157,13 @@ export interface RepeatPlayer {
  * to see. Losers are visible in balances because nothing redeems a losing
  * token, so `RepeatPlayer` is one holder lookup per market. Winners redeem and
  * their balances go to zero, so this has to be rebuilt from cumulative trades,
- * one subgraph query per market, which is why it is its own command and not a
+ * one trade-source read per market, which is why it is its own command and not a
  * column on an existing one.
  *
  * The same restraint applies as to `RepeatPlayer`, in the other direction.
  * Someone wins every market, and winning a disputed one is not evidence of
  * anything on its own. What varies, and is therefore worth printing, is how
- * often: across 33 contested markets read, 263 wallets won one and a single
- * wallet won seven. The tally is the finding and the reader supplies the rest.
+ * often. The tally is the finding and the reader supplies the rest.
  */
 export interface Regular {
   address: string;
@@ -188,7 +187,7 @@ export interface Regular {
  * Which evidence a result is standing on.
  *
  * `catalogue` means only the market record answered. `positions` adds current
- * balances, `trades` names the historical trade index, and
+ * balances, `trades` names either validated trade source, and
  * `positions+trades` means both position sources answered. Every tier names
  * what was actually read rather than what was configured, which is the whole
  * point: a partial picture presented as a complete one is the failure this
@@ -207,6 +206,18 @@ export type TradeIndexCoverage =
   | { status: 'covered'; lastTradeAt: string }
   | { status: 'beyond'; lastTradeAt: string }
   | { status: 'unknown'; reason: string };
+
+/** Terms attached to a winning side rebuilt from the current trade log. */
+export interface TradeLogCoverage {
+  /** Minimum trade size in dollars. Zero means no cash floor was applied. */
+  floor: number;
+  /** Usable trades included after validation. */
+  read: number;
+  /** The log stopped at its paging ceiling, so older trades are absent. */
+  truncated: boolean;
+  /** Malformed rows omitted from the response. */
+  dropped: number;
+}
 
 /** A wallet that bought the side which went on to win. */
 export interface Winner {
@@ -237,8 +248,8 @@ export interface Assessment {
   /**
    * Concentration of the side that won, rebuilt from trades.
    *
-   * Only present on a settled market, and only when the subgraph answered. Its
-   * absence is recorded as a caveat rather than shown as an empty result.
+   * Only present on a settled market, and only when a trade source answered.
+   * Its absence is recorded as a caveat rather than shown as an empty result.
    */
   winnerConcentration?: Concentration;
   /** The largest buyers of the winning side, largest first. */
@@ -258,15 +269,27 @@ export interface Assessment {
   /**
    * Where the trade index stops, set only when this market closed after it.
    *
-   * Present means the winning side was never read, so `winners` being absent or
-   * empty says nothing about who held it. A consumer parses fields rather than
-   * prose, and `"winners": []` on its own is a claim that the side was read and
-   * nobody was there. This is the field that stops it being read that way, and
-   * it is absent whenever the reading was actually covered.
+   * Present means the index did not cover the market. `tradeLog` says whether a
+   * current source answered instead. Without that fallback, `winners` is
+   * omitted rather than returned as an empty array.
    */
   tradeIndexEndsAt?: string;
   /** Machine-readable coverage for the winning-side query, when one was attempted. */
   tradeIndexCoverage?: TradeIndexCoverage;
+  /**
+   * Set when `winners` was rebuilt from the data-api trade log rather than from
+   * the index. This happens when the index is behind, its coverage is unknown,
+   * or its covered position query fails and the log can answer instead.
+   *
+   * The two fields answer different questions and a consumer needs both. The
+   * one above says the index did not cover this market. This one says whether
+   * anything covered it instead, and on what terms: `floor` is the minimum
+   * trade size in dollars that made the read servable, `read` is how many
+   * trades went into it, `dropped` counts malformed rows, and `truncated` means
+   * the log itself was cut at the most recent `read` of a longer history, which
+   * makes every total here a partial rather than a cumulative one.
+   */
+  tradeLog?: TradeLogCoverage;
   /** Why this reading is incomplete. Empty means it is not. */
   caveats: string[];
   /** Money at stake, used to rank. */

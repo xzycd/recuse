@@ -76,7 +76,7 @@ describe('parseArgs', () => {
   });
 
   it('keeps the winner rebuild off the radar unless asked', () => {
-    // It costs a subgraph round trip per row, so the radar does not pay for it
+    // It costs a trade-source read per row, so the radar does not pay for it
     // by default. `recuse market` does, because there it is one request.
     expect(parseArgs([]).winners).toBe(false);
     expect(parseArgs(['--winners']).winners).toBe(true);
@@ -232,5 +232,26 @@ describe('the built binary', () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('40 hexadecimal characters');
     expect(result.stdout).toBe('');
+  });
+});
+
+describe('--version', () => {
+  it('is parsed, and short', () => {
+    expect(parseArgs(['--version']).version).toBe(true);
+    expect(parseArgs(['-V']).version).toBe(true);
+    // Distinct from -h, which is help. A CLI that answers one and errors on
+    // the other is the one shape nobody expects.
+    expect(parseArgs(['--help']).version).toBe(false);
+  });
+
+  const entry = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+
+  it.skipIf(!existsSync(entry))('prints the number alone, with nothing around it', () => {
+    // Read by a script comparing it against something. A banner, a spinner or
+    // a trailing hint would all have to be stripped back off, and the version
+    // is the one output here whose entire value is being exactly the number.
+    const out = execFileSync(process.execPath, [entry, '--version'], { encoding: 'utf8' });
+    expect(out.trim()).toBe(version());
+    expect(out.trim()).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });

@@ -67,7 +67,21 @@ const engine: Engine = {
     return id === 'missing' ? undefined : assessment();
   },
   async winners(id) {
-    return id === 'missing' ? undefined : assessment({
+    if (id === 'missing') return undefined;
+    // Past the index and nothing else could read it: omit the list entirely so
+    // an empty array can never be mistaken for a read that found nobody.
+    if (id === 'beyond') {
+      return assessment({ tradeIndexEndsAt: '2026-01-05T22:05:45.000Z' });
+    }
+    // Past the index, and the trade log answered anyway.
+    if (id === 'from-log') {
+      return assessment({
+        winners: [{ address: '0xd99f', bought: 18_600_000, net: 18_600_000, spent: 18_500_000, netSpent: 18_500_000 }],
+        tradeIndexEndsAt: '2026-01-05T22:05:45.000Z',
+        tradeLog: { floor: 5000, read: 5392, truncated: false, dropped: 0 },
+      });
+    }
+    return assessment({
       winnerConcentration: {
         side: 'NO', meaning: 'redeemed', basis: 'trades', topN: 5, topShare: 0.52,
         topSize: 30_500_000, totalSize: 58_900_000, holderCount: 20, floor: 1000,
@@ -81,7 +95,7 @@ const engine: Engine = {
   },
   async wallet(address) {
     return {
-      address, entries: [], won: 29, lost: 9, split: 0, open: 1,
+      address, entries: [], won: 29, lost: 9, split: 0, exited: 0, open: 1,
       gain: 859_000, contestedGain: 275_000, contested: 11, caveats: [],
       tradeIndex: { status: 'known', lastTradeAt: '2026-01-05T22:05:45.000Z' },
     };
@@ -105,9 +119,10 @@ const engine: Engine = {
       marketsRead: 38, marketsScored: 20, marketsFailed: 2, undecided: 4, empty: 18,
       beyondIndex: 25, indexHead: '2026-01-05T22:05:45.000Z',
       coverageUnknown: 3,
+      fromLog: 21, fromLogPastIndex: 21, logCut: 3, logFloorLow: 500, logFloorHigh: 5_000,
       floorLow: 1_000, floorHigh: 100_000, floorRaised: 6,
       wallets: 494, namesAsked: 1, namesFailed: 0,
-      positionsDropped: 2,
+      positionsDropped: 2, tradesDropped: 4,
     };
   },
 };
@@ -369,6 +384,34 @@ describe('what the payload refuses to leave out', () => {
     expect(payload.tradeIndexCoverage.status).toBe('unknown');
   });
 
+  it('says the winning side was read when the log read it, and by what', async () => {
+    const { payload } = await call('winning_side', { market: '0xabc' });
+    // The index reaching this market is the ordinary case, and the consumer
+    // still gets told which source it stood on rather than having to infer it.
+    expect(payload.winningSideRead).toBe(true);
+    expect(payload.readFrom).toBe('trade index');
+    expect(payload.tradeIndexEndsAt).toBeUndefined();
+  });
+
+  it('separates a side nothing read from a side the log read instead', async () => {
+    // These two used to be one field. `winningSideRead: false` was set from the
+    // index falling short alone, which stopped being the same statement the
+    // moment something else could answer past it.
+    const unread = await call('winning_side', { market: 'beyond' });
+    expect(unread.payload.winningSideRead).toBe(false);
+    expect(unread.payload.limits.join(' ')).toContain('never means nobody won');
+
+    const rescued = await call('winning_side', { market: 'from-log' });
+    expect(rescued.payload.winningSideRead).toBe(true);
+    expect(rescued.payload.readFrom).toBe('trade log');
+    // The terms travel as fields, not only as prose, because a consumer parses
+    // fields and a summariser drops sentences.
+    expect(rescued.payload.tradeLog).toEqual({
+      floor: 5000, read: 5392, truncated: false, dropped: 0,
+    });
+    expect(rescued.payload.limits.join(' ')).toContain('rebuilt from 5392 trades in the log');
+  });
+
   it('never states a win count without the markets it is out of', async () => {
     const { payload } = await call('repeat_winners');
     // `won 11` is the number a summary keeps. The denominator has to be
@@ -394,8 +437,9 @@ describe('what the payload refuses to leave out', () => {
     expect(caveats).toContain('2 contested markets could not be read');
     expect(caveats).toContain('18 markets returned no position above the floor');
     expect(caveats).toContain('4 contested markets have not settled');
-    expect(caveats).toContain('3 empty market readings had unknown trade-index coverage');
+    expect(caveats).toContain('3 markets had unknown trade-index coverage');
     expect(caveats).toContain('2 malformed winning-position rows were omitted');
+    expect(caveats).toContain('4 malformed live-log trade rows were omitted');
   });
 
   it('reports the floor range, not just the highest one it hit', async () => {
@@ -411,7 +455,21 @@ describe('what the payload refuses to leave out', () => {
     // HTTP 200, exactly as it answers a market nobody traded. Collapsing the
     // two is how two thirds of the contested set read as markets nobody won.
     expect(caveats).toContain('25 contested markets closed after the trade index stops at 2026-01-05');
-    expect(caveats).toContain('covers older markets and not recent ones');
+    // 21 of those 25 were rescued from the trade log, and the four that were
+    // not are their own sentence. Reporting only the 25 would understate the
+    // coverage and reporting only the 21 would hide the hole.
+    expect(caveats).toContain('21 of those were rebuilt from the trade log');
+    expect(caveats).toContain('4 contested markets were not read by anything');
+  });
+
+  it('never lets a partial trade log pass as a cumulative total', async () => {
+    const { payload } = await call('repeat_winners');
+    const caveats = payload.caveats.join(' ');
+    // A floor drops small trades and names its size. This drops the older half
+    // of a market and keeps the recent one, so the totals on those rows are not
+    // cumulative at all, which is a different and worse statement.
+    expect(caveats).toContain('trades of $500 or more');
+    expect(caveats).toContain('3 markets had more trades than the log will page to');
   });
 
   it('says an unread name is unread rather than letting it read as unnamed', async () => {

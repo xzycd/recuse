@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLedger, indexOfToken, payoutFor } from './wallet.js';
+import { buildLedger, indexOfToken, payoutFor, payoutFromPrices } from './wallet.js';
 import type { Market } from '../types.js';
 
 const market = (over: Partial<Market> = {}): Market =>
@@ -147,5 +147,62 @@ describe('buildLedger', () => {
     });
     expect(ledger.entries).toHaveLength(0);
     expect(ledger.caveats[0]).toContain('1 positions could not be matched');
+  });
+});
+
+describe('a payout read off closing prices', () => {
+  const settled = (prices: number[]) => market({ outcomePrices: prices });
+
+  it('reads a resolved binary market as one dollar to the winner', () => {
+    const p = payoutFromPrices(settled([1, 0]));
+    expect(payoutFor(p, 0)).toBe(1);
+    expect(payoutFor(p, 1)).toBe(0);
+  });
+
+  it('reads a split resolution as half to each, not a loss on both', () => {
+    // UMA does hand these down, and the fallback has to state it as the chain
+    // would rather than pick a winner.
+    const p = payoutFromPrices(settled([0.5, 0.5]));
+    expect(payoutFor(p, 0)).toBe(0.5);
+    expect(payoutFor(p, 1)).toBe(0.5);
+  });
+
+  it('refuses an open market, where the prices are an opinion', () => {
+    // This is the whole risk of pricing off Gamma. A market trading at 0.97 is
+    // not a market that resolved, and treating it as one settles a position
+    // that is still live.
+    expect(payoutFromPrices(settled([0.97, 0.03]))).toBeUndefined();
+    expect(payoutFromPrices(settled([0.6, 0.4]))).toBeUndefined();
+    expect(payoutFromPrices(market({ closed: false, active: true, outcomePrices: [1, 0] })))
+      .toBeUndefined();
+  });
+
+  it('refuses prices that do not divide one dollar between them', () => {
+    expect(payoutFromPrices(settled([1, 1]))).toBeUndefined();
+    expect(payoutFromPrices(settled([1]))).toBeUndefined();
+    expect(payoutFromPrices(settled([]))).toBeUndefined();
+  });
+});
+
+describe('a position closed before the market settled', () => {
+  it('is neither won nor lost, and its trading profit is still counted', () => {
+    // Could not happen while positions came from the index, which was asked for
+    // survivors only. The trade log has no such filter, and a wallet that
+    // flipped its whole position is ordinary.
+    const m = market({ outcomePrices: [1, 0] });
+    const token = m.tokenIds[0]!;
+    const ledger = buildLedger({
+      address: '0xaaa',
+      positions: [{ tokenId: token, bought: 1000, net: 0, netSpent: -400 }],
+      payouts: new Map([[token, { conditionId: m.conditionId, numerators: [1, 0], denominator: 1 }]]),
+      markets: new Map([[m.conditionId, m]]),
+    });
+
+    expect(ledger.exited).toBe(1);
+    expect(ledger.won).toBe(0);
+    expect(ledger.lost).toBe(0);
+    // Sold for 400 more than it paid. That money moved whatever the market did
+    // next, so it stays in the total.
+    expect(ledger.gain).toBe(400);
   });
 });

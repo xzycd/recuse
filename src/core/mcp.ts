@@ -262,16 +262,30 @@ export function recuseTools(engine: Engine): McpTool[] {
           conditionId: a.market.conditionId,
           question: a.market.question,
           concentration: share(conc),
-          ...(a.winners ? { winners: a.winners.map(winnerRow) } : {}),
+          ...(a.winners !== undefined ? { winners: a.winners.map(winnerRow) } : {}),
           winningSideRead: a.winners !== undefined,
           ...(a.tradeIndexCoverage ? { tradeIndexCoverage: a.tradeIndexCoverage } : {}),
           ...(a.tradeIndexEndsAt ? { tradeIndexEndsAt: a.tradeIndexEndsAt } : {}),
+          ...(a.winners !== undefined ? { readFrom: a.tradeLog ? 'trade log' : 'trade index' } : {}),
+          // The terms these numbers came on. `floor` is a minimum trade size in
+          // dollars, and `truncated` means the log itself was cut at the most
+          // recent `read` trades of a longer history, which makes every total
+          // above partial rather than cumulative.
+          ...(a.tradeLog ? { tradeLog: a.tradeLog } : {}),
           evidence: a.tier,
           caveats: a.caveats,
           limits: [
             ...ALWAYS,
-            ...(a.tradeIndexEndsAt
-              ? [`the trade index stops at ${a.tradeIndexEndsAt.slice(0, 10)} and this market closed after that, so an empty winners list here means not read and never means nobody won`]
+            ...(a.tradeIndexEndsAt && !a.tradeLog
+              ? [`the trade index stops at ${a.tradeIndexEndsAt.slice(0, 10)} and this market closed after that, and nothing else could read it either, so an empty winners list here means not read and never means nobody won`]
+              : []),
+            ...(a.tradeLog
+              ? [a.tradeIndexEndsAt
+                ? `the trade index does not reach this market, so the winning side was rebuilt from ${a.tradeLog.read} trades in the log${a.tradeLog.floor > 0 ? `, counting only trades of $${a.tradeLog.floor} or more` : ''}`
+                : `the trade index did not provide the winning side, so it was rebuilt from ${a.tradeLog.read} trades in the log${a.tradeLog.floor > 0 ? `, counting only trades of $${a.tradeLog.floor} or more` : ''}`]
+              : []),
+            ...(a.tradeLog?.truncated
+              ? ['the log was cut at the most recent trades it will page to, so these totals are partial and are not cumulative buys']
               : []),
             'these are cumulative buys, not balances. a balance is a position now and a winner\'s is zero',
             ...(conc?.floor
@@ -336,13 +350,22 @@ export function recuseTools(engine: Engine): McpTool[] {
               ? [`${s.empty} markets returned no position above the floor and are not in the denominator`]
               : []),
             ...(s.beyondIndex > 0
-              ? [`${s.beyondIndex} contested markets closed after the trade index stops${s.indexHead ? ` at ${s.indexHead.slice(0, 10)}` : ''} and were not read at all, so this covers older markets and not recent ones`]
+              ? [`${s.beyondIndex} contested markets closed after the trade index stops${s.indexHead ? ` at ${s.indexHead.slice(0, 10)}` : ''}${s.fromLogPastIndex > 0 ? `, and ${s.fromLogPastIndex} of those were rebuilt from the trade log instead${s.logFloorHigh > 0 ? ` counting only trades of $${s.logFloorLow} or more` : ''}` : ' and none of them could be read'}`]
+              : []),
+            ...(s.beyondIndex - s.fromLogPastIndex > 0
+              ? [`${s.beyondIndex - s.fromLogPastIndex} contested markets were not read by anything and are in no wallet's count`]
+              : []),
+            ...(s.logCut > 0
+              ? [`${s.logCut} markets had more trades than the log will page to, so their wallet totals are the most recent trades rather than every trade`]
               : []),
             ...(s.coverageUnknown > 0
-              ? [`${s.coverageUnknown} empty market readings had unknown trade-index coverage and were not counted`]
+              ? [`${s.coverageUnknown} markets had unknown trade-index coverage, the live log also failed, and they were not counted`]
               : []),
             ...(s.positionsDropped > 0
               ? [`${s.positionsDropped} malformed winning-position rows were omitted`]
+              : []),
+            ...(s.tradesDropped > 0
+              ? [`${s.tradesDropped} malformed live-log trade rows were omitted`]
               : []),
             ...(s.undecided > 0 ? [`${s.undecided} contested markets have not settled and were skipped`] : []),
             ...(s.floorHigh > 0
@@ -365,10 +388,11 @@ export function recuseTools(engine: Engine): McpTool[] {
     {
       name: 'wallet_record',
       description:
-        'One wallet\'s settlement positions across resolved Polymarket markets, disputed ones first: which side it held, '
-        + 'whether that side won, and the net in dollars. Positions come from cumulative trades and '
-        + 'settlement from the on-chain payout, so a wallet that redeemed and vanished from every '
-        + 'balance-based tracker is still fully visible. A wallet appearing on both sides of one market is '
+        'One wallet\'s traded positions across Polymarket markets, disputed ones first: which side it held, '
+        + 'whether that side won, and the net in dollars. Positions come from cumulative trades. Settlement '
+        + 'comes from the on-chain payout, with exact closing prices used only where that payout index is behind, '
+        + 'so a wallet that redeemed and vanished from every balance-based tracker is still visible. '
+        + 'A wallet appearing on both sides of one market is '
         + 'a spread, not a contradiction. Repeat the caveats and limits fields in any answer built on this.',
       inputSchema: {
         type: 'object',
@@ -387,10 +411,15 @@ export function recuseTools(engine: Engine): McpTool[] {
         return {
           address: ledger.address,
           name: ledger.name,
-          resolved: ledger.won + ledger.lost + ledger.split,
+          resolved: ledger.won + ledger.lost + ledger.split + ledger.exited,
           won: ledger.won,
           lost: ledger.lost,
           split: ledger.split,
+          // Settled markets this wallet had already traded out of. Reported
+          // rather than folded into either side, because a summariser adding
+          // won to lost and finding it short of resolved is asking the right
+          // question, and one that never sees the gap is not.
+          exited: ledger.exited,
           open: ledger.open,
           netUsd: ledger.gain,
           contestedMarkets: ledger.contested,
@@ -412,8 +441,9 @@ export function recuseTools(engine: Engine): McpTool[] {
           limits: [
             ...ALWAYS,
             'a profitable record is a record of being right, and this tool cannot tell that from anything else',
+            'exited means the position was closed before the market settled, so it neither won nor lost and its profit came from trading',
             'only the positions read are summarised here, so the totals cover the positions listed and not the wallet\'s whole history',
-            'positions sold before settlement and positions at or below the reported floor are absent',
+            'the totals cover only the source span and row limit disclosed in caveats. the live log includes exited positions, while an older-index fallback contains survivors only',
           ],
         };
       },
@@ -475,8 +505,15 @@ export function recuseTools(engine: Engine): McpTool[] {
  * UMA hands down 50/50 outcomes, and calling one a loss is wrong on both sides
  * of the market at once.
  */
-function result(entry: { resolved: boolean; payout?: number }): 'open' | 'won' | 'lost' | 'split' | 'unknown' {
+function result(
+  entry: { resolved: boolean; payout?: number; net: number },
+): 'open' | 'won' | 'lost' | 'split' | 'exited' | 'unknown' {
   if (!entry.resolved) return 'open';
+  // Ahead of the payout, and the reason is a claim rather than a display
+  // choice. A wallet that sold out of the winning side before settlement was
+  // paid nothing on the outcome, and a summariser handed `won` here would say
+  // it won a market it was not in when the answer landed.
+  if (entry.net <= 0) return 'exited';
   if (entry.payout === undefined) return 'unknown';
   if (entry.payout === 1) return 'won';
   if (entry.payout === 0) return 'lost';

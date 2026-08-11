@@ -13,7 +13,7 @@
 
 import {
   accent, bold, clip, count, dim, displayName, label, meter, money, padEnd, padStart, paintRounds,
-  pct, rule, shortAddress, until,
+  pct, rule, shortAddress, until, wrap,
 } from './format.js';
 import { formatSteps } from '../core/dispute.js';
 import { winnerMoney, winningSide } from '../core/capture.js';
@@ -138,6 +138,43 @@ export function renderRadar(
   return lines.join('\n');
 }
 
+/**
+ * A sentence under a table, wrapped to the terminal.
+ *
+ * The footers say what a reading did not cover, and they got longer as the
+ * coverage got more complicated. At eighty columns the line naming where the
+ * index stops and how much of the gap the log filled ran two thirds again past
+ * the edge, which on most terminals wraps mid-word and on the rest is simply
+ * gone.
+ */
+function note(text: string, style: Style): string[] {
+  return wrap(text, style.width).map((line) => dim(line, style));
+}
+
+/**
+ * The caveat block, wrapped rather than cut.
+ *
+ * Every surface here prints the whole list, and every one of them used to clip
+ * each line to the terminal width. The longest caveat in the tool, the one
+ * naming where the trade index stops and what was read instead, ended at "so
+ * t…" in eighty columns, which is a caveat that cannot do its job. Cutting is
+ * right for a table cell whose column has to hold its width, and wrong for a
+ * sentence, where nothing below depends on where the line ends.
+ */
+function caveatBlock(caveats: string[], style: Style): string[] {
+  const out: string[] = [];
+
+  for (const caveat of caveats) {
+    const [first, ...rest] = wrap(caveat, Math.max(20, style.width - 4));
+    out.push(dim(`  \u00b7 ${first}`, style));
+    // Indented past the bullet, so a wrapped caveat reads as one item and not
+    // as two.
+    for (const line of rest) out.push(dim(`    ${line}`, style));
+  }
+
+  return out;
+}
+
 export function renderMarket(a: Assessment, style: Style): string {
   const lines: string[] = [];
   const w = style.width;
@@ -210,7 +247,7 @@ export function renderMarket(a: Assessment, style: Style): string {
   if (a.caveats.length > 0) {
     lines.push('');
     lines.push(dim('caveats', style));
-    for (const c of a.caveats) lines.push(dim(`  · ${clip(c, w - 4)}`, style));
+    lines.push(...caveatBlock(a.caveats, style));
   }
 
   return lines.join('\n');
@@ -300,6 +337,11 @@ export function renderRegulars(
     beyondIndex: number;
     coverageUnknown: number;
     indexHead?: string;
+    fromLog: number;
+    fromLogPastIndex: number;
+    logCut: number;
+    logFloorLow: number;
+    logFloorHigh: number;
     floorLow: number;
     floorHigh: number;
     floorRaised: number;
@@ -307,6 +349,7 @@ export function renderRegulars(
     namesAsked: number;
     namesFailed: number;
     positionsDropped: number;
+    tradesDropped: number;
   },
   style: Style,
 ): string {
@@ -334,13 +377,23 @@ export function renderRegulars(
       lines.push(dim(`${scan.empty} markets had no position above the floor.`, style));
     }
     if (scan.beyondIndex > 0) {
-      lines.push(dim(`${scan.beyondIndex} markets were beyond the trade index and not read.`, style));
+      const unread = scan.beyondIndex - scan.fromLogPastIndex;
+      lines.push(
+        ...note(
+          `${scan.beyondIndex} markets were beyond the trade index; `
+            + `${scan.fromLogPastIndex} were rebuilt from the live log and ${unread} stayed unread.`,
+          style,
+        ),
+      );
     }
     if (scan.coverageUnknown > 0) {
-      lines.push(dim(`${scan.coverageUnknown} empty readings had unknown index coverage.`, style));
+      lines.push(dim(`${scan.coverageUnknown} markets had unknown index coverage and stayed unread.`, style));
     }
     if (scan.positionsDropped > 0) {
       lines.push(dim(`${scan.positionsDropped} malformed positions were omitted.`, style));
+    }
+    if (scan.tradesDropped > 0) {
+      lines.push(dim(`${scan.tradesDropped} malformed trades were omitted.`, style));
     }
     return lines.join('\n');
   }
@@ -388,7 +441,7 @@ export function renderRegulars(
   );
 
   // Everything the tally did not cover, counted rather than implied. A market
-  // the subgraph refused is not a market nobody won.
+  // neither trade source read is not a market nobody won.
   const gaps: string[] = [];
   if (scan.marketsFailed > 0) gaps.push(`${scan.marketsFailed} could not be read`);
   if (scan.undecided > 0) gaps.push(`${scan.undecided} not settled yet`);
@@ -396,14 +449,64 @@ export function renderRegulars(
   if (scan.coverageUnknown > 0) gaps.push(`${scan.coverageUnknown} had unknown index coverage`);
   if (gaps.length > 0) lines.push(dim(`${gaps.join(', ')}.`, style));
 
-  // The gap that used to be invisible. These markets were not quiet, they were
-  // never reached, and the store reports both the same way.
-  if (scan.beyondIndex > 0) {
+  if (scan.positionsDropped + scan.tradesDropped > 0) {
     lines.push(
-      dim(
-        `${scan.beyondIndex} closed after the trade index stops`
-          + `${scan.indexHead ? ` at ${scan.indexHead.slice(0, 10)}` : ''}`
-          + ' and were not read at all. this table cannot see recent markets.',
+      ...note(
+        `${scan.positionsDropped} malformed index positions and ${scan.tradesDropped} malformed log trades were omitted.`,
+        style,
+      ),
+    );
+  }
+
+  // The gap that used to be invisible. These markets were not quiet, they were
+  // never reached, and the store reports both the same way. Now most of them
+  // are answered from the trade log, so the line says how many and on what
+  // terms rather than writing them all off.
+  if (scan.beyondIndex > 0) {
+    const where = scan.indexHead ? ` at ${scan.indexHead.slice(0, 10)}` : '';
+    // Only the ones past the index count against this sentence. `fromLog` also
+    // holds markets the store refused outright, and subtracting all of it from
+    // `beyondIndex` printed 22 of 18 rescued.
+    const unread = scan.beyondIndex - scan.fromLogPastIndex;
+    lines.push(
+      ...note(
+        `${scan.beyondIndex} closed after the trade index stops${where}. `
+          + (scan.fromLogPastIndex > 0
+            ? `${scan.fromLogPastIndex} of those were rebuilt from the trade log instead`
+              + (unread > 0 ? `, and ${unread} were not read at all.` : '.')
+            : 'none of them could be read at all.'),
+        style,
+      ),
+    );
+  }
+
+  const rescued = scan.fromLog - scan.fromLogPastIndex;
+  if (rescued > 0) {
+    lines.push(
+      ...note(`${rescued} more came from the log where the index could not provide a reliable answer.`, style),
+    );
+  }
+
+  if (scan.logFloorHigh > 0) {
+    lines.push(
+      ...note(
+        `the log counted only trades of $${scan.logFloorLow} or more`
+          + (scan.logFloorHigh > scan.logFloorLow
+            ? `, rising to $${scan.logFloorHigh} on the markets too busy to read below that.`
+            : '.'),
+        style,
+      ),
+    );
+  }
+
+  // Worse than a floor and reported separately. A floor drops the small trades
+  // and names its size; this drops the older half of a market and keeps the
+  // recent one, so those rows are partial rather than cumulative.
+  if (scan.logCut > 0) {
+    lines.push(
+      ...note(
+        `${scan.logCut} of those had more trades than the log will page to, `
+          + 'so their totals cover only the most recent ones.',
         style,
       ),
     );
@@ -414,7 +517,7 @@ export function renderRegulars(
     // times out. Reporting the largest as though it applied everywhere would
     // overstate what was left out of the markets that answered cheaply.
     lines.push(
-      dim(
+      ...note(
         scan.floorRaised > 0
           ? `positions at or below ${scan.floorLow} tokens were never requested, and ${scan.floorRaised} markets `
             + `needed a higher floor, up to ${scan.floorHigh}.`
@@ -425,14 +528,11 @@ export function renderRegulars(
   }
   if (scan.regulars.length > scan.namesAsked) {
     lines.push(
-      dim(`names were looked up for the top ${scan.namesAsked} rows only. below that the column is unread.`, style),
+      ...note(`names were looked up for the top ${scan.namesAsked} rows only. below that the column is unread.`, style),
     );
   }
   if (scan.namesFailed > 0) {
     lines.push(dim(`${scan.namesFailed} names could not be looked up and show as addresses.`, style));
-  }
-  if (scan.positionsDropped > 0) {
-    lines.push(dim(`${scan.positionsDropped} malformed positions were omitted.`, style));
   }
   lines.push(
     dim('from trades, not balances. these wallets redeemed and hold nothing now.', style),
@@ -471,29 +571,33 @@ export function renderWinners(a: Assessment, winners: Winner[], style: Style): s
   lines.push(rule(style));
 
   if (winners.length === 0) {
-    // Read off a field rather than inferred from the caveat text. A renderer
-    // grepping prose for the reason is a display decision made the authority on
-    // an evidence question, which this file has done once before and stopped.
+    // Read off `winners` rather than the old index boundary. A successful live
+    // log can authoritatively return no surviving positions for a market the
+    // index never reached, and calling that result unread discards the source
+    // that answered.
+    const unread = a.winners === undefined;
     lines.push(
       dim(
-        a.tradeIndexCoverage?.status === 'beyond'
+        unread && a.tradeIndexCoverage?.status === 'beyond'
           ? `the winning side was not read. the trade index stops at ${a.tradeIndexCoverage.lastTradeAt.slice(0, 10)} `
             + 'and this market closed after that.'
-          : a.tradeIndexCoverage?.status === 'unknown'
+          : unread && a.tradeIndexCoverage?.status === 'unknown'
             ? `the winning side was not read. ${a.tradeIndexCoverage.reason}.`
-          : 'no winning positions were returned for this market.',
+            : unread
+              ? 'the winning side was not read.'
+              : 'no winning positions were returned for this market.',
         style,
       ),
     );
-    for (const c of a.caveats) lines.push(dim(`  · ${clip(c, style.width - 4)}`, style));
+    lines.push(...caveatBlock(a.caveats, style));
     return lines.join('\n');
   }
 
-  // The subgraph has no display names, so these are joined in from the data
-  // API's activity records, which is the only place a redeemed wallet is still
-  // named. A name never replaces the address: it is chosen by the account and
-  // nothing stops one calling itself another account's address, so the anchor
-  // stays on screen and the full form stays in --json.
+  // The trade sources have no display names, so these are joined in from the
+  // data API's activity records. A name never replaces the address: it is
+  // chosen by the account and nothing stops one calling itself another
+  // account's address, so the anchor stays on screen and the full form stays in
+  // --json.
   const addrW = Math.min(44, Math.max(14, style.width - 52));
   const named = winners.some((w) => w.name);
   // 42 is a full address. Below that, or once names need room beside them,
@@ -553,7 +657,7 @@ export function renderWinners(a: Assessment, winners: Winner[], style: Style): s
   // said every one of them, which is the version that was right: the caveats
   // are assembled as data precisely so no surface can quietly choose among
   // them, and the empty-winners branch above prints the whole list.
-  for (const c of a.caveats) lines.push(dim(`  · ${clip(c, style.width - 4)}`, style));
+  lines.push(...caveatBlock(a.caveats, style));
 
   return lines.join('\n');
 }
@@ -713,7 +817,7 @@ export function renderWallet(
       question: string; side: string; rounds: number; net: number; cost: number;
       gain?: number; payout?: number; resolved: boolean;
     }[];
-    won: number; lost: number; split: number; open: number;
+    won: number; lost: number; split: number; exited: number; open: number;
     gain: number; contestedGain: number; contested: number; caveats: string[];
   },
   style: Style,
@@ -728,11 +832,11 @@ export function renderWallet(
     bold(ledger.address, style) + (walletName ? dim(`  ${walletName}`, style) : ''),
   );
 
-  const resolved = ledger.won + ledger.lost + ledger.split;
+  const resolved = ledger.won + ledger.lost + ledger.split + ledger.exited;
   if (resolved === 0 && ledger.open === 0) {
     lines.push(rule(style));
     lines.push(dim('no positions found for this address.', style));
-    for (const c of ledger.caveats) lines.push(dim(`  · ${c}`, style));
+    lines.push(...caveatBlock(ledger.caveats, style));
     return lines.join('\n');
   }
 
@@ -741,6 +845,7 @@ export function renderWallet(
     `${ledger.won} won`,
     `${ledger.lost} lost`,
     ledger.split > 0 ? `${ledger.split} split` : '',
+    ledger.exited > 0 ? `${ledger.exited} exited` : '',
     ledger.open > 0 ? `${ledger.open} open` : '',
     `${signed(ledger.gain)} net`,
   ].filter(Boolean);
@@ -769,13 +874,18 @@ export function renderWallet(
   for (const e of ledger.entries.slice(0, 60)) {
     const result = !e.resolved
       ? dim(padEnd('open', 8), style)
-      : e.payout === 1
-        ? padEnd('won', 8)
-        : e.payout === 0
-          ? dim(padEnd('lost', 8), style)
-          // A split resolution pays both sides something. Reporting it as a
-          // loss on both would be wrong on both, and UMA does hand these down.
-          : padEnd(`${Math.round((e.payout ?? 0) * 100)}%`, 8);
+      // Held nothing when it settled, so it was paid nothing. Checked ahead of
+      // the payout, because a wallet that sold out of the winning side would
+      // otherwise read as having won a market it was not in.
+      : e.net <= 0
+        ? dim(padEnd('exited', 8), style)
+        : e.payout === 1
+          ? padEnd('won', 8)
+          : e.payout === 0
+            ? dim(padEnd('lost', 8), style)
+            // A split resolution pays both sides something. Reporting it as a
+            // loss on both would be wrong on both, and UMA does hand these down.
+            : padEnd(`${Math.round((e.payout ?? 0) * 100)}%`, 8);
 
     lines.push(
       paintRounds(e.rounds, padStart(e.rounds > 0 ? `${e.rounds}×` : '·', 4), style) + '  ' +
@@ -791,7 +901,7 @@ export function renderWallet(
   lines.push(
     dim('from trades, not balances, so positions that redeemed are still counted.', style),
   );
-  for (const c of ledger.caveats) lines.push(dim(`  · ${c}`, style));
+  lines.push(...caveatBlock(ledger.caveats, style));
 
   return lines.join('\n');
 }

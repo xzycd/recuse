@@ -55,6 +55,12 @@ export interface WalletLedger {
   won: number;
   lost: number;
   split: number;
+  /**
+   * Resolved markets the wallet had traded out of before settlement, so it was
+   * paid nothing and lost nothing on the outcome. Their trading profit is still
+   * in `gain`, because that money moved.
+   */
+  exited: number;
   open: number;
   /** Net USD across resolved positions. */
   gain: number;
@@ -72,6 +78,48 @@ export interface PayoutLike {
   conditionId: string;
   numerators?: number[];
   denominator?: number;
+}
+
+/**
+ * The payout a settled market implies, read off Gamma's closing prices.
+ *
+ * Second best and used only as such. The chain payout is authoritative: it
+ * survives a market being delisted and it states a split resolution as what it
+ * is. But the subgraph that serves it stops at the same head its trades do, so
+ * a condition resolved this year comes back with no payout and no error, and a
+ * ledger built on that prices every recent position at nothing.
+ *
+ * Refuses rather than guesses in three places. An open market has live prices
+ * and no payout at all. A price that does not land on a half is not a
+ * resolution, whatever it looks like. And prices that sum to something other
+ * than one are not a payout either, since the two sides of a resolved binary
+ * market always divide exactly one dollar between them.
+ */
+export function payoutFromPrices(market: Market): PayoutLike | undefined {
+  if (!market.closed) return undefined;
+
+  const prices: number[] = [];
+  for (const price of market.outcomePrices) {
+    if (typeof price !== 'number' || !Number.isFinite(price) || price < 0 || price > 1) {
+      return undefined;
+    }
+    prices.push(price);
+  }
+  if (prices.length < 2) return undefined;
+
+  const total = prices.reduce((a, p) => a + p, 0);
+  if (Math.abs(total - 1) > 1e-6) return undefined;
+
+  // Doubled, so 1 and 0 become 2 and 0 and a 50/50 becomes 1 and 1, over a
+  // denominator of 2. Anything landing between those is not a resolution.
+  const numerators = prices.map((p) => p * 2);
+  if (numerators.some((n) => Math.abs(n - Math.round(n)) > 1e-6)) return undefined;
+
+  return {
+    conditionId: market.conditionId,
+    numerators: numerators.map((n) => Math.round(n)),
+    denominator: 2,
+  };
 }
 
 export interface LedgerInput {
@@ -176,6 +224,7 @@ export function buildLedger(input: LedgerInput): WalletLedger {
   let won = 0;
   let lost = 0;
   let split = 0;
+  let exited = 0;
   let open = 0;
   let gain = 0;
   let contestedGain = 0;
@@ -186,7 +235,17 @@ export function buildLedger(input: LedgerInput): WalletLedger {
       open += 1;
       continue;
     }
-    if (entry.payout === 1) won += 1;
+    // Nothing was still held when this settled, so it was neither won nor lost.
+    // The gain is real and stays in the total, because the position was traded
+    // out at a price and that money moved. Counting it as a win would say the
+    // wallet was paid a dollar a token on something it no longer owned.
+    //
+    // This case could not arise while positions came from the index, which was
+    // asked for `netQuantity_gt` and so only ever returned survivors. The trade
+    // log has no such filter and a wallet that flipped a position in full is
+    // ordinary, which is how the distinction turned up at all.
+    if (entry.net <= 0) exited += 1;
+    else if (entry.payout === 1) won += 1;
     else if (entry.payout === 0) lost += 1;
     else split += 1;
 
@@ -207,6 +266,7 @@ export function buildLedger(input: LedgerInput): WalletLedger {
     won,
     lost,
     split,
+    exited,
     open,
     gain,
     contestedGain,
