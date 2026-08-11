@@ -1,6 +1,7 @@
 {
   "name": "recuse",
-  "version": "0.8.0",
+  "version": "0.8.1",
+  "mcpName": "io.github.xzycd/recuse",
   "description": "Read the record behind a Polymarket resolution: how many dispute rounds, who was wiped out, and who bought the side that won.",
   "type": "module",
   "license": "MIT",
@@ -17,7 +18,7 @@
     "type": "git",
     "url": "git+https://github.com/xzycd/recuse.git"
   },
-  "homepage": "https://github.com/xzycd/recuse#readme",
+  "homepage": "https://xzycd.github.io/recuse/",
   "bugs": {
     "url": "https://github.com/xzycd/recuse/issues"
   },
@@ -37,8 +38,8 @@
     "prepare": "node tools/prepare.mjs"
   },
   "dependencies": {
-    "ink": "^6.0.1",
-    "react": "^19.1.0"
+    "ink": "6.8.0",
+    "react": "19.2.8"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -48,9 +49,13 @@
   },
   "keywords": [
     "polymarket",
+    "polymarket-cli",
     "prediction-markets",
+    "prediction-market",
     "uma",
     "oracle",
+    "mcp-server",
+    "crypto",
     "cli",
     "tui"
   ]

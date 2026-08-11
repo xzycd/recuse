@@ -24,7 +24,7 @@ Polymarket display names are chosen freely by the account holder, and `recuse` p
 
 The last two matter most, because every finding in this tool is anchored to an address.
 
-Every string from every source is filtered on the way in, in the source module, before it reaches any renderer. Filtering at ingest rather than at render is deliberate: a render-time filter is one forgotten call site away from a hole, and it would leave `--json` output dirty while the table looked clean. The filter removes control characters by code point rather than trying to match escape-sequence grammar, because grammars are large, terminal specific and still growing, while the control character set is fixed.
+Every string from every source is filtered on the way in, in the source module, before it reaches any renderer. Filtering at ingest rather than at render is deliberate: a render-time filter is one forgotten call site away from a hole, and it would leave `--json` output dirty while the table looked clean. The filter removes control characters and Unicode default-ignorable code points rather than trying to match escape-sequence grammar. Grammars are large, terminal specific and still growing, while none of those invisible controls carries useful report content.
 
 ## The MCP surface, and the one thing the filter does not cover
 
@@ -44,7 +44,7 @@ The structural mitigation is that nothing in this tool acts on what it reads. Th
 
 **Credentials never reach output.** `RECUSE_RPC_URL` usually carries an API key, in a path segment or a query parameter, and Node puts request URLs into some network error messages. Every error printed by the CLI goes through a redactor first, because the natural next step after an error is pasting it into an issue.
 
-**Responses are capped at 32MB.** `res.json()` buffers whatever arrives with no limit. The declared Content-Length is checked first, then the bytes are counted while reading, because the header is a claim and the stream is the fact.
+**Responses are capped at 32MB.** `res.json()` buffers whatever arrives with no limit. The declared Content-Length is checked first, then the bytes are counted while reading, because the header is a claim and the stream is the fact. Invalid UTF-8, malformed JSON and oversized bodies fail without a retry because downloading deterministic poison again only amplifies it.
 
 **`RECUSE_RPC_URL` must be http or https.** Without a scheme check, `file:` would turn a config value into a local file read the day the oracle layer starts POSTing to it. This check was written once and wired to a constructor nothing ever called, so it did not run at all until it was moved to the status function that every reading calls. An unwired defence reads exactly like a working one, which is the second time that has cost time here, so the check now has tests that fail if it stops running, and `npm run check` now fails on any symbol the program cannot reach from its entry point.
 
@@ -67,6 +67,8 @@ The structural mitigation is that nothing in this tool acts on what it reads. Th
 There is no TLS pinning. A machine with a hostile root certificate authority sees hostile data.
 
 The upstream APIs are trusted for truth but not for safety. If Gamma reports a dispute count that is wrong, `recuse` repeats it. The verification in `matchesRequest` catches being handed the wrong record, not a wrong field inside the right one.
+
+Webhook delivery accepts any HTTP or HTTPS destination, including a private network address. This is intentional for locally configured receivers, but it means an untrusted caller must never be allowed to choose CLI arguments on someone else's machine.
 
 ## Reporting something
 

@@ -26,6 +26,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { assessAll } from '../dist/core/assess.js';
+import { redactMessage } from '../dist/core/safe.js';
 import { chainNote } from '../dist/sources/chain.js';
 import { formatSteps } from '../dist/core/dispute.js';
 import { fetchContestedMarkets } from '../dist/sources/gamma.js';
@@ -37,20 +38,33 @@ const OUT = join(ROOT, 'site');
 
 const SCAN = Number(process.env.SITE_SCAN ?? 600);
 const PAGES = Number(process.env.SITE_PAGES ?? 60);
-const ORIGIN = process.env.SITE_ORIGIN ?? 'https://xzycd.github.io/recuse';
+
+/** A public base URL safe to place in HTML, XML and robots.txt. */
+export function siteOrigin(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('SITE_ORIGIN must be a valid URL');
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error('SITE_ORIGIN must use http or https');
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('SITE_ORIGIN must not contain credentials, a query or a fragment');
+  }
+  return url.toString().replace(/\/$/, '');
+}
+
+const ORIGIN = siteOrigin(process.env.SITE_ORIGIN ?? 'https://xzycd.github.io/recuse');
 
 /**
  * The one install line, in one place.
  *
- * These pages told every visitor to run `npx recuse`, which resolves to nothing:
- * the name is not on the registry, so it is a 404 for anyone who tries it. The
- * README had already been corrected for exactly this and says so in the file,
- * and the site kept the claim for another release because it was written out
- * four separate times in a generator nobody reread. `npm run check` now fails
- * on either form of the unpublished name, so the next person to reach for it
- * gets told rather than shipping it to the public surface.
+ * Keep the generated pages, update notice and README on the same registry
+ * install. This used to drift because each surface carried its own claim.
  */
-const INSTALL = 'npm i -g github:xzycd/recuse';
+const INSTALL = 'npm i -g recuse';
 
 /**
  * Escape for HTML.
@@ -69,6 +83,16 @@ export function esc(value) {
     .replaceAll("'", '&#39;');
 }
 
+/** Escape text placed in sitemap XML. */
+export function xmlEsc(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
+}
+
 /** A slug safe to use as a filename and a URL segment. */
 export function pageName(a) {
   const base = a.market.slug || a.market.conditionId || '';
@@ -82,6 +106,16 @@ export function pageName(a) {
     .slice(0, 80);
 
   return `${clean || 'market'}.html`;
+}
+
+/** Refuse to let two remote slugs silently overwrite the same market page. */
+export function assertUniquePageNames(assessments) {
+  const names = new Set();
+  for (const assessment of assessments) {
+    const name = pageName(assessment);
+    if (names.has(name)) throw new Error(`two markets map to the same page: ${name}`);
+    names.add(name);
+  }
 }
 
 function money(n) {
@@ -212,7 +246,7 @@ ${shareCell(c)}
 
   const body = `<header>
 <h1>RECUSE</h1>
-<div class="tag">Polymarket settles by vote. This is the record of those votes.</div>
+<div class="tag">Wallet trackers show what remains. Recuse rebuilds what settled.</div>
 </header>
 
 <p>Every market below was contested at least once: someone put up a bond to argue the proposed outcome was wrong. The colour is the round count and nothing else.</p>
@@ -230,8 +264,8 @@ ${rows}
 
 <p class="terms">${meta.contested} contested of ${meta.scanned} markets examined, showing ${assessments.length}. ${meta.scanned - meta.contested} were never contested and are not listed.</p>
 
-<h2>the part other tools cannot show you</h2>
-<p>When a market settles, winners redeem their tokens for a dollar each and their balances go to zero. Losers keep theirs, because there is nothing to redeem them for. So the holder list of a settled market is almost entirely the people who lost, and every balance-based tracker is blind to the side that won.</p>
+<h2>what balances erase</h2>
+<p>When a market settles, winners redeem their tokens for a dollar each and their balances go to zero. Losers keep theirs, because there is nothing to redeem them for. So the holder list of a settled market is almost entirely the people who lost, and a balance-only view is blind to the side that won.</p>
 <p>On the Zelenskyy market the winning side reads as <strong>907 tokens</strong> in current balances and <strong>71,435,381</strong> in cumulative buys. The largest winner does not appear in the holder list at all.</p>
 <p>These pages rebuild that side from trades.</p>
 
@@ -350,6 +384,8 @@ async function main() {
 
   const generatedAt = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
 
+  assertUniquePageNames(assessments);
+
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(OUT, { recursive: true });
 
@@ -375,7 +411,7 @@ async function main() {
   writeFileSync(
     join(OUT, 'sitemap.xml'),
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${
-      urls.map((u) => `  <url><loc>${ORIGIN}${u}</loc></url>`).join('\n')
+      urls.map((u) => `  <url><loc>${xmlEsc(`${ORIGIN}${u}`)}</loc></url>`).join('\n')
     }\n</urlset>\n`,
   );
 
@@ -393,7 +429,8 @@ async function main() {
 // only ever worked because `npm run site` names the file it runs.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
-    process.stderr.write(`${err?.message ?? err}\n`);
+    const message = err instanceof Error ? err.message : 'site generation failed';
+    process.stderr.write(`${redactMessage(message)}\n`);
     process.exitCode = 1;
   });
 }

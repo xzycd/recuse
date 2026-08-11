@@ -23,6 +23,14 @@ export class HttpError extends Error {
   }
 }
 
+/** A deterministic problem with a response. Retrying downloads the same poison. */
+class InvalidResponseError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'InvalidResponseError';
+  }
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -43,13 +51,16 @@ export const MAX_BODY_BYTES = 32 * 1024 * 1024;
  * stream is the fact.
  */
 export async function readJsonCapped<T>(res: Response, max = MAX_BODY_BYTES): Promise<T> {
+  if (!Number.isSafeInteger(max) || max <= 0) {
+    throw new RangeError('response size cap must be a positive safe integer');
+  }
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > max) {
     await res.body?.cancel().catch(() => {});
-    throw new Error(`response too large: ${declared} bytes`);
+    throw new InvalidResponseError(`response too large: ${declared} bytes`);
   }
 
-  if (!res.body) return (await res.json()) as T;
+  if (!res.body) throw new InvalidResponseError('response had no JSON body');
 
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -60,7 +71,7 @@ export async function readJsonCapped<T>(res: Response, max = MAX_BODY_BYTES): Pr
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > max) throw new Error(`response exceeded ${max} bytes`);
+      if (total > max) throw new InvalidResponseError(`response exceeded ${max} bytes`);
       chunks.push(value);
     }
   } finally {
@@ -77,7 +88,17 @@ export async function readJsonCapped<T>(res: Response, max = MAX_BODY_BYTES): Pr
     offset += chunk.byteLength;
   }
 
-  return JSON.parse(new TextDecoder().decode(joined)) as T;
+  let decoded: string;
+  try {
+    decoded = new TextDecoder('utf-8', { fatal: true }).decode(joined);
+  } catch (err) {
+    throw new InvalidResponseError('response was not valid UTF-8', { cause: err });
+  }
+  try {
+    return JSON.parse(decoded) as T;
+  } catch (err) {
+    throw new InvalidResponseError('response was not valid JSON', { cause: err });
+  }
 }
 
 /**
@@ -88,10 +109,17 @@ export async function readJsonCapped<T>(res: Response, max = MAX_BODY_BYTES): Pr
  */
 export async function getJson<T>(url: string, opts: FetchOptions = {}): Promise<T> {
   const { timeoutMs = 20_000, retries = 3, method = 'GET', body, headers = {} } = opts;
+  const retryCount = Number.isSafeInteger(retries) ? Math.min(5, Math.max(0, retries)) : 3;
+  const requestTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? Math.min(120_000, Math.floor(timeoutMs))
+    : 20_000;
+  // Serialise once. A cyclic object or throwing getter is a request bug and
+  // repeating it after a backoff cannot make it succeed.
+  const encodedBody = body === undefined ? undefined : JSON.stringify(body);
 
   let lastError: unknown;
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  for (let attempt = 0; attempt <= retryCount; attempt++) {
     if (attempt > 0) {
       // 400ms, 800ms, 1600ms, enough to clear a rate limit, short enough
       // that an interactive command still feels alive.
@@ -99,15 +127,15 @@ export async function getJson<T>(url: string, opts: FetchOptions = {}): Promise<
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), requestTimeout);
 
     try {
       const res = await fetch(url, {
         method,
         redirect: 'error',
         signal: controller.signal,
-        headers: body ? { 'Content-Type': 'application/json', ...headers } : headers,
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        headers: encodedBody === undefined ? headers : { 'Content-Type': 'application/json', ...headers },
+        ...(encodedBody === undefined ? {} : { body: encodedBody }),
       });
 
       if (!res.ok) {
@@ -125,6 +153,7 @@ export async function getJson<T>(url: string, opts: FetchOptions = {}): Promise<
       return await readJsonCapped<T>(res);
     } catch (err) {
       if (err instanceof HttpError && err.status < 500 && err.status !== 429) throw err;
+      if (err instanceof InvalidResponseError) throw err;
       lastError = err;
     } finally {
       clearTimeout(timer);
@@ -133,7 +162,7 @@ export async function getJson<T>(url: string, opts: FetchOptions = {}): Promise<
 
   throw lastError instanceof Error
     ? lastError
-    : new Error(`request failed after ${retries + 1} attempts: ${url}`);
+    : new Error(`request failed after ${retryCount + 1} attempts: ${url}`);
 }
 
 /**

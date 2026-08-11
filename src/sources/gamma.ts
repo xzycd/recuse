@@ -17,6 +17,10 @@ const BASE = 'https://gamma-api.polymarket.com';
 /** Gamma silently caps page size here. Asking for more just wastes a round trip. */
 const PAGE_SIZE = 100;
 
+/** No embedded market field should make downstream work unbounded. */
+const MAX_EMBEDDED_ITEMS = 1_000;
+const MAX_EMBEDDED_TEXT = 256 * 1024;
+
 function newest(a: Market, b: Market): Market {
   const aTime = Date.parse(a.updatedAt ?? '');
   const bTime = Date.parse(b.updatedAt ?? '');
@@ -73,13 +77,19 @@ interface RawMarket {
  */
 export function toMarket(raw: RawMarket): Market {
   const embeddedArray = (value: unknown): unknown[] => {
+    if (typeof value === 'string' && value.length > MAX_EMBEDDED_TEXT) return [];
     const decoded = parseEmbeddedJson<unknown>(value, []);
-    return Array.isArray(decoded) ? decoded : [];
+    return Array.isArray(decoded) ? decoded.slice(0, MAX_EMBEDDED_ITEMS) : [];
   };
-  const nonnegative = (value: unknown): number => Math.max(0, num(value));
+  const nonnegative = (value: unknown): number => {
+    const parsed = num(value);
+    return parsed >= 0 && parsed <= Number.MAX_SAFE_INTEGER ? parsed : 0;
+  };
   const positive = (value: unknown): number | undefined => {
     const parsed = numOrUndefined(value);
-    return parsed !== undefined && parsed > 0 ? parsed : undefined;
+    return parsed !== undefined && parsed > 0 && parsed <= Number.MAX_SAFE_INTEGER
+      ? parsed
+      : undefined;
   };
   const price = (value: unknown): number | undefined => {
     const parsed = numOrUndefined(value);
@@ -136,9 +146,10 @@ export async function fetchMarkets(query: MarketQuery = {}): Promise<Market[]> {
 
   const out: Market[] = [];
   const indexByCondition = new Map<string, number>();
+  let examined = 0;
 
-  for (let offset = 0; out.length < requested;) {
-    const pageSize = Math.min(PAGE_SIZE, requested - out.length);
+  for (let offset = 0; examined < requested;) {
+    const pageSize = Math.min(PAGE_SIZE, requested - examined);
     const params = new URLSearchParams({
       limit: String(pageSize),
       offset: String(offset),
@@ -150,8 +161,10 @@ export async function fetchMarkets(query: MarketQuery = {}): Promise<Market[]> {
 
     const page = await getJson<RawMarket[]>(`${BASE}/markets?${params}`);
     if (!Array.isArray(page)) throw new Error('Gamma returned an invalid market page');
+    if (page.length > pageSize) throw new Error('Gamma exceeded the requested market page size');
     if (page.length === 0) break;
     offset += page.length;
+    examined += page.length;
 
     for (const market of page.map(toMarket)) {
       // Every downstream join and deduplication key is the condition id. A row
@@ -296,6 +309,7 @@ export async function fetchMarketsByCondition(
           `${BASE}/markets?${key}&closed=${closed}&limit=${PAGE_SIZE}`,
         );
         if (!Array.isArray(page)) throw new Error('Gamma returned an invalid batch lookup');
+        if (page.length > PAGE_SIZE) throw new Error('Gamma exceeded the requested batch size');
 
         for (const market of page.map(toMarket)) {
           // Verified against the request, never trusted because it came back.

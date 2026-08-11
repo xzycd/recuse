@@ -105,7 +105,6 @@ export function compareSteps(before: ResolutionStep[], after: ResolutionStep[]):
 
   if (!prefixHolds) return { kind: 'rewritten' };
   if (after.length === before.length) return { kind: 'unchanged' };
-  if (after.length < before.length) return { kind: 'rewritten' };
 
   return { kind: 'appended', steps: after.slice(before.length) };
 }
@@ -193,7 +192,11 @@ export function compare(
   // A price change rather than a lifecycle change. Gamma does not always append
   // a `resolved` step when a market lands, so without this a settlement on a
   // market someone is watching can pass in silence.
-  if (!before.settled && next.settled) {
+  // When Gamma supplies both signals in the same poll, `resolved` already says
+  // the market settled. Emitting the price fallback too records and delivers
+  // the same transition twice. `settled` exists for the feeds that omit the
+  // lifecycle step, so keep it only when it is adding that missing fact.
+  if (!before.settled && next.settled && !events.some((event) => event.kind === 'resolved')) {
     events.push({
       ...base,
       kind: 'settled',

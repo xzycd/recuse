@@ -139,7 +139,8 @@ export interface LedgerInput {
  */
 export function indexOfToken(market: Market, tokenId: string): number | undefined {
   const index = market.tokenIds.indexOf(tokenId);
-  return index >= 0 ? index : undefined;
+  if (index < 0 || market.tokenIds.lastIndexOf(tokenId) !== index) return undefined;
+  return index;
 }
 
 /**

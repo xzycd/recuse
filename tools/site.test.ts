@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error plain .mjs build tool, no types, deliberately not compiled
-import { esc, pageName } from './site.mjs';
+import { assertUniquePageNames, esc, pageName, siteOrigin, xmlEsc } from './site.mjs';
 
 describe('esc', () => {
   it('neutralises a script tag in a market question', () => {
@@ -67,5 +67,32 @@ describe('pageName', () => {
 
   it('never returns a bare extension', () => {
     expect(pageName(market('', '!!!'))).toBe('market.html');
+  });
+
+  it('refuses page names that collide after sanitising or truncating', () => {
+    expect(() => assertUniquePageNames([
+      market('same/name', '0xaaa'),
+      market('same-name', '0xbbb'),
+    ])).toThrow('two markets map to the same page: same-name.html');
+  });
+});
+
+describe('siteOrigin', () => {
+  it('accepts an http origin with a path and removes its trailing slash', () => {
+    expect(siteOrigin('https://example.com/recuse/')).toBe('https://example.com/recuse');
+  });
+
+  it('rejects values that can inject credentials or non-web schemes', () => {
+    expect(() => siteOrigin('file:///tmp/site')).toThrow('must use http or https');
+    expect(() => siteOrigin('https://token@example.com/recuse')).toThrow('must not contain');
+    expect(() => siteOrigin('https://example.com/recuse?x=1')).toThrow('must not contain');
+  });
+});
+
+describe('xmlEsc', () => {
+  it('escapes every XML delimiter before writing sitemap locations', () => {
+    expect(xmlEsc('https://example.com/a&b<"c">')).toBe(
+      'https://example.com/a&amp;b&lt;&quot;c&quot;&gt;',
+    );
   });
 });

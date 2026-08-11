@@ -78,10 +78,20 @@ async function readTradeIndexCoverage(market: Market): Promise<TradeIndexCoverag
 
 /** Which CLOB token id represents a side, using the market's own labels. */
 export function tokenIdForSide(market: Market, side: Side): string | undefined {
+  let matched: string | undefined;
   for (let i = 0; i < market.tokenIds.length; i++) {
-    if (sideForIndex(market, i) === side) return market.tokenIds[i];
+    if (sideForIndex(market, i) !== side) continue;
+    const tokenId = market.tokenIds[i];
+    if (tokenId === undefined) return undefined;
+    // Two outcome labels naming the same side are just as ambiguous as one
+    // token naming two outcomes. There must be exactly one side-to-token join.
+    if (matched !== undefined) return undefined;
+    // A token listed for two outcomes cannot identify a side. Gamma is remote
+    // input, so fail closed rather than letting the first match flip a result.
+    if (market.tokenIds.indexOf(tokenId) !== market.tokenIds.lastIndexOf(tokenId)) return undefined;
+    matched = tokenId;
   }
-  return undefined;
+  return matched;
 }
 
 /**

@@ -27,6 +27,7 @@ interface Named {
 
 interface RawHolder extends Named {
   proxyWallet?: string;
+  asset?: unknown;
   amount?: unknown;
   outcomeIndex?: unknown;
 }
@@ -67,7 +68,19 @@ export async function fetchHolders(market: Market, limit = 100): Promise<Holder[
   // the guarantee that it is a 32 byte hash belongs next to the interpolation,
   // not three modules away in whatever produced the Market.
   const condition = safeHash(market.conditionId);
-  if (!condition) return [];
+  if (!condition) throw new Error('market has no usable condition id for a holder lookup');
+
+  const tokenList = market.tokenIds.filter((token): token is string => token !== undefined);
+  const expectedTokens = new Set(tokenList);
+  // The response names outcome tokens, not the condition they belong to. With
+  // no trusted token list there is no way to prove that a returned group
+  // answers this market rather than an ignored filter, so fail before asking.
+  if (expectedTokens.size === 0) {
+    throw new Error('market has no usable outcome token ids for a holder lookup');
+  }
+  if (expectedTokens.size !== tokenList.length) {
+    throw new Error('market has duplicate outcome token ids');
+  }
 
   const size = Number.isFinite(limit)
     ? Math.min(Math.max(1, Math.floor(limit)), 500)
@@ -77,7 +90,6 @@ export async function fetchHolders(market: Market, limit = 100): Promise<Holder[
   if (!Array.isArray(groups)) throw new Error('holders endpoint returned an invalid response');
 
   const out: Holder[] = [];
-  const expectedTokens = new Set(market.tokenIds.filter((token): token is string => token !== undefined));
   const seenTokens = new Set<string>();
 
   for (const group of groups) {
@@ -87,8 +99,11 @@ export async function fetchHolders(market: Market, limit = 100): Promise<Holder[
     if (group.holders !== undefined && !Array.isArray(group.holders)) {
       throw new Error('holders endpoint returned an invalid holder list');
     }
+    if (group.holders && group.holders.length > size) {
+      throw new Error('holders endpoint exceeded the requested holder limit');
+    }
     const token = safeTokenId(group.token);
-    if (!token || (expectedTokens.size > 0 && !expectedTokens.has(token))) {
+    if (!token || !expectedTokens.has(token)) {
       throw new Error('holders endpoint returned a token outside the requested market');
     }
     if (seenTokens.has(token)) throw new Error('holders endpoint returned a duplicate token group');
@@ -97,6 +112,13 @@ export async function fetchHolders(market: Market, limit = 100): Promise<Holder[
 
     for (const raw of group.holders ?? []) {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+
+      // The group token is already checked against Gamma. The holder repeats
+      // it as `asset`; when present, a disagreement means the response cannot
+      // be joined safely and must not become a partial concentration figure.
+      if (raw.asset !== undefined && safeTokenId(raw.asset) !== token) {
+        throw new Error('holders endpoint returned a holder under the wrong token');
+      }
       const address = safeAddress(raw.proxyWallet);
       if (!address) continue;
 
@@ -113,6 +135,9 @@ export async function fetchHolders(market: Market, limit = 100): Promise<Holder[
 
       const amount = numOrUndefined(raw.amount);
       if (amount === undefined || amount <= 0) continue;
+      if (amount > Number.MAX_SAFE_INTEGER) {
+        throw new Error('holders endpoint returned an amount outside the safe numeric range');
+      }
 
       const price = market.outcomePrices[index];
 
@@ -138,11 +163,22 @@ export async function fetchHolders(market: Market, limit = 100): Promise<Holder[
       merged.set(key, { ...holder });
       continue;
     }
+    if (existing.size > Number.MAX_SAFE_INTEGER - holder.size) {
+      throw new Error('holders endpoint exceeded the safe numeric range');
+    }
     existing.size += holder.size;
     existing.value = existing.value === undefined || holder.value === undefined
       ? undefined
       : existing.value + holder.value;
     existing.name ??= holder.name;
+  }
+
+  let total = 0;
+  for (const holder of merged.values()) {
+    if (total > Number.MAX_SAFE_INTEGER - holder.size) {
+      throw new Error('holders endpoint exceeded the safe numeric range');
+    }
+    total += holder.size;
   }
 
   return [...merged.values()].sort((a, b) => b.size - a.size);
@@ -176,10 +212,19 @@ export async function fetchDisplayNames(
 
   for (const address of clean) {
     try {
-      const rows = await getJson<Named[]>(`${BASE}/activity?user=${address}&limit=1`);
+      const rows = await getJson<(Named & { proxyWallet?: unknown })[]>(
+        `${BASE}/activity?user=${address}&limit=1`,
+      );
+      if (!Array.isArray(rows) || rows.length > 1) {
+        throw new Error('activity endpoint returned an invalid name response');
+      }
       // Same treatment as a holder name: chosen by the account, printed next to
       // a claim about that account, so it goes through safeText on the way in.
-      const name = Array.isArray(rows) && rows[0] ? displayName(rows[0]) : undefined;
+      const row = rows[0];
+      if (row && safeAddress(row.proxyWallet) !== address) {
+        throw new Error('activity endpoint returned a name for another wallet');
+      }
+      const name = row ? displayName(row) : undefined;
       if (name) byAddress.set(address, name);
     } catch {
       failed += 1;

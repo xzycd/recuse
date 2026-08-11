@@ -1,8 +1,30 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  clip, count, displayName, label, meter, money, padEnd, padStart, pct, shortAddress, until,
-  widthOf, wrap,
+  clip, count, detectStyle, displayName, label, meter, money, normaliseWidth, padEnd, padStart, pct,
+  shortAddress, until, widthOf, wrap,
 } from './format.js';
+
+afterEach(() => vi.unstubAllEnvs());
+
+describe('terminal width', () => {
+  it('accepts a finite positive width and drops fractional cells', () => {
+    expect(normaliseWidth(120.9)).toBe(120);
+    expect(normaliseWidth('96')).toBe(96);
+  });
+
+  it('falls back from invalid widths and caps hostile ones', () => {
+    expect(normaliseWidth(Number.POSITIVE_INFINITY)).toBe(80);
+    expect(normaliseWidth(-1)).toBe(80);
+    expect(normaliseWidth('not-a-width')).toBe(80);
+    expect(normaliseWidth(100_000_000)).toBe(10_000);
+  });
+
+  it('does not trust an invalid COLUMNS environment value', () => {
+    vi.stubEnv('COLUMNS', 'Infinity');
+    expect(detectStyle({ colour: false }).width).toBeGreaterThan(0);
+    expect(detectStyle({ colour: false }).width).toBeLessThanOrEqual(10_000);
+  });
+});
 
 describe('clip', () => {
   it('marks that something was cut', () => {

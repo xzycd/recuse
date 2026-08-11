@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { distinctMarkets, matchesRequest, toMarket } from './gamma.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { distinctMarkets, fetchMarkets, matchesRequest, toMarket } from './gamma.js';
 
 describe('toMarket', () => {
   it('decodes the fields Gamma ships as JSON inside a string', () => {
@@ -77,6 +77,25 @@ describe('toMarket', () => {
     expect(m.umaReward).toBeUndefined();
     expect(m.outcomePrices).toEqual([undefined, undefined]);
   });
+
+  it('refuses quantities outside the safe arithmetic range', () => {
+    const m = toMarket({
+      volumeNum: Number.MAX_VALUE,
+      liquidityNum: Number.MAX_VALUE,
+      umaBond: Number.MAX_VALUE,
+      umaReward: Number.MAX_VALUE,
+    });
+    expect(m.volume).toBe(0);
+    expect(m.liquidity).toBe(0);
+    expect(m.umaBond).toBeUndefined();
+    expect(m.umaReward).toBeUndefined();
+  });
+
+  it('caps embedded arrays before downstream code walks them', () => {
+    const values = Array.from({ length: 1_010 }, (_, i) => String(i));
+    const m = toMarket({ outcomes: JSON.stringify(values) });
+    expect(m.outcomes).toHaveLength(1_000);
+  });
 });
 
 describe('matchesRequest', () => {
@@ -108,5 +127,37 @@ describe('distinctMarkets', () => {
 
   it('drops rows without the condition id every downstream join requires', () => {
     expect(distinctMarkets([toMarket({ slug: 'unjoinable' })])).toEqual([]);
+  });
+});
+
+describe('fetchMarkets resource bounds', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('caps raw rows examined even when every record is unusable', async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const limit = Number(url.searchParams.get('limit'));
+      // No condition id, so none of these rows can enter the output. The raw
+      // scan still has to stop at the requested budget instead of paging until
+      // a hostile endpoint decides to return a short page.
+      return new Response(JSON.stringify(Array.from({ length: limit }, () => ({ slug: 'bad' }))), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetcher);
+
+    await expect(fetchMarkets({ limit: 150 })).resolves.toEqual([]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(String(fetcher.mock.calls[1]![0])).toContain('limit=50');
+  });
+
+  it('rejects a server that ignores the requested page size', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify([{}, {}]), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(fetchMarkets({ limit: 1 })).rejects.toThrow(/exceeded the requested market page size/);
   });
 });

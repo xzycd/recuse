@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * recuse: see who decides a Polymarket market, and what they own.
+ * recuse: rebuild the settlement record that final balances erase.
  *
  * Every command takes --json. The renderers are one consumer of the engine,
  * not the product, and anything you can read you can pipe.
@@ -12,7 +12,7 @@ import { assess, assessAll, assessWallet, tallyRegulars, tallyRepeatPlayers } fr
 import { checkForUpdate, updateNotice, INSTALL_COMMAND } from './core/update.js';
 import { checkWebhook } from './core/notify.js';
 import { chainNote } from './sources/chain.js';
-import { redactMessage, safeAddress } from './core/safe.js';
+import { redactMessage, safeAddress, safeText } from './core/safe.js';
 import {
   acquireWatchLock, addToWatchlist, readEventLog, readEvents, readRadar, readSeen, readWatchlist,
   removeFromWatchlist, writeRadar, type SeenState,
@@ -82,7 +82,8 @@ options
   --json            machine-readable output
   --card            market: a block sized for pasting into a chat
   --plain           force the plain renderer
-  --limit <n>       rows to show, or positions to read for wallet (default 25)
+  --limit <n>       rows to show, or positions to read for wallet (default 25,
+                    maximum 500; winners maximum 100)
   --scan <n>        markets to examine (default 600)
   --all             include markets that were never contested
   --winners         rebuild the winning side on the radar too, one query per row
@@ -266,6 +267,9 @@ export function parseArgs(argv: string[]): Args {
   }
   if (args.theme && args.theme !== 'list' && !themeNames().includes(args.theme)) {
     throw new Error(`unknown theme: ${args.theme}`);
+  }
+  if (args.command === 'winners' && args.limit > 100) {
+    throw new Error('--limit for winners must be at most 100');
   }
 
   return args;
@@ -451,17 +455,22 @@ async function lookup(args: Args, style: ReturnType<typeof detectStyle>) {
     process.stderr.write(`recuse ${args.command}: needs a condition id or slug\n`);
     return undefined;
   }
+  const target = safeText(args.target, 256);
+  if (!target) {
+    process.stderr.write(`recuse ${args.command}: needs a usable condition id or slug\n`);
+    return undefined;
+  }
 
   const spinner = args.json
     ? { update() {}, stop() {} }
     : startSpinner('reading market', { theme: style.theme, depth: style.depth });
 
   try {
-    const market = await fetchMarket(args.target);
+    const market = await fetchMarket(target);
     if (!market) {
       // Gamma answers an unrecognised filter with its default page, so a lookup
       // that cannot be verified is reported as a miss rather than guessed at.
-      process.stderr.write(`no market matched ${args.target}\n`);
+      process.stderr.write(`no market matched ${target}\n`);
       return undefined;
     }
     return { market, spinner };
@@ -745,20 +754,25 @@ async function runWatchAdmin(args: Args): Promise<number> {
       process.stderr.write(`recuse watch ${args.sub}: needs a condition id or slug\n`);
       return 2;
     }
+    const target = safeText(args.target, 120);
+    if (!target) {
+      process.stderr.write(`recuse watch ${args.sub}: needs a usable condition id or slug\n`);
+      return 2;
+    }
 
     const adding = args.sub === 'add';
     const result = adding
-      ? await addToWatchlist(args.target)
-      : await removeFromWatchlist(args.target);
+      ? await addToWatchlist(target)
+      : await removeFromWatchlist(target);
     const changed = 'added' in result ? result.added : result.removed;
 
     if (args.json) {
-      emitJson({ action: args.sub, target: args.target, changed, watching: result.list.markets });
+      emitJson({ action: args.sub, target, changed, watching: result.list.markets });
       return 0;
     }
 
     const verb = changed ? (adding ? 'watching' : 'dropped') : (adding ? 'already watching' : 'was not watching');
-    emit(`${verb} ${args.target}`);
+    emit(`${verb} ${target}`);
     emit(dimly(`${result.list.markets.length} on the watchlist`, style));
     return 0;
   }
@@ -990,7 +1004,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   try {
     args = parseArgs(argv);
   } catch (err) {
-    process.stderr.write(`${(err as Error).message}\n\n${USAGE}`);
+    process.stderr.write(`${redactMessage((err as Error).message ?? String(err))}\n\n${USAGE}`);
     return 2;
   }
 
@@ -1039,7 +1053,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       case 'serve':
         return await runServe(args);
       default:
-        process.stderr.write(`unknown command: ${args.command}\n\n${USAGE}`);
+        process.stderr.write(`unknown command: ${safeText(args.command, 120)}\n\n${USAGE}`);
         return 2;
     }
   } catch (err) {

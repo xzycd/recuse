@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { isEntrypoint, parseArgs, version } from './cli.js';
+import { isEntrypoint, main, parseArgs, version } from './cli.js';
 
 describe('parseArgs', () => {
   it('defaults to the radar', () => {
@@ -85,6 +85,51 @@ describe('parseArgs', () => {
   it('takes winners as a command with a target', () => {
     const a = parseArgs(['winners', 'will-zelenskyy-wear-a-suit-before-july']);
     expect(a).toMatchObject({ command: 'winners', target: 'will-zelenskyy-wear-a-suit-before-july' });
+  });
+
+  it('rejects a winners limit the source would silently clamp', () => {
+    expect(parseArgs(['winners', 'market', '--limit', '100']).limit).toBe(100);
+    expect(() => parseArgs(['winners', 'market', '--limit', '101'])).toThrow(
+      /--limit for winners must be at most 100/,
+    );
+  });
+});
+
+describe('CLI diagnostics', () => {
+  it('strips terminal controls from rejected arguments', async () => {
+    let written = '';
+    const original = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      written += String(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      expect(await main(['--bad\u001b[2J'])).toBe(2);
+    } finally {
+      process.stderr.write = original;
+    }
+
+    expect(written).not.toContain('\u001b');
+    expect(written).toContain('unknown option');
+  });
+
+  it('strips invisible direction changes from an unknown command', async () => {
+    let written = '';
+    const original = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      written += String(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      expect(await main(['un\u202eknown'])).toBe(2);
+    } finally {
+      process.stderr.write = original;
+    }
+
+    expect(written).not.toContain('\u202e');
+    expect(written).toContain('unknown command: unknown');
   });
 });
 

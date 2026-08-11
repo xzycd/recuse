@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { num, numOrUndefined, parseEmbeddedJson, readJsonCapped } from './http.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getJson, num, numOrUndefined, parseEmbeddedJson, readJsonCapped } from './http.js';
 
 /** A Response whose body streams the given chunks, no network involved. */
 function streamed(chunks: string[], headers: Record<string, string> = {}): Response {
@@ -51,6 +51,56 @@ describe('readJsonCapped', () => {
       },
     });
     expect(await readJsonCapped(new Response(body))).toEqual({ s: '€' });
+  });
+
+  it('rejects invalid UTF-8 instead of replacing bytes inside JSON', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Uint8Array.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]));
+        controller.close();
+      },
+    });
+    await expect(readJsonCapped(new Response(body))).rejects.toThrow(/valid UTF-8/);
+  });
+
+  it('rejects an invalid cap before reading', async () => {
+    await expect(readJsonCapped(streamed(['{}']), Number.MAX_VALUE)).rejects.toThrow(/positive safe integer/);
+  });
+});
+
+describe('getJson retries', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('does not redownload a deterministic malformed JSON response', async () => {
+    const fetcher = vi.fn(async () => new Response('{broken', { status: 200 }));
+    vi.stubGlobal('fetch', fetcher);
+
+    await expect(getJson('https://example.test/data', { retries: 3 })).rejects.toThrow(/valid JSON/);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('still retries a transient server failure', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('down', { status: 503 }))
+      .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal('fetch', fetcher);
+
+    await expect(getJson('https://example.test/data', { retries: 1 })).resolves.toEqual({ ok: true });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('caps a caller-supplied retry count', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async () => { throw new TypeError('offline'); });
+    vi.stubGlobal('fetch', fetcher);
+
+    const result = expect(getJson('https://example.test/data', { retries: 50 })).rejects.toThrow(/offline/);
+    await vi.runAllTimersAsync();
+    await result;
+    expect(fetcher).toHaveBeenCalledTimes(6);
   });
 });
 

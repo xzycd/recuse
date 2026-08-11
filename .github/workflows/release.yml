@@ -17,20 +17,18 @@ on:
         type: boolean
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-      PUBLISH_NPM: ${{ inputs.publish_npm || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,7 +38,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install --global npm@11.12.1
 
       - name: Validate release ref
         shell: bash
@@ -68,26 +68,68 @@ jobs:
           cd release
           sha256sum *.tgz > SHA256SUMS
 
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-package
+          path: release
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-npm:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_npm == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-package
+          path: release
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install --global npm@11.12.1
+
       - name: Publish to npm with provenance
-        if: env.PUBLISH_NPM == 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
+          (cd release && sha256sum --check SHA256SUMS)
+          VERSION="${RELEASE_TAG#v}"
           if npm view "recuse@${VERSION}" version >/dev/null 2>&1; then
             echo "recuse@${VERSION} is already published"
             exit 0
           fi
-          npm publish --provenance --access public
+          npm publish release/*.tgz --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
 
-      - name: Explain npm skip
-        if: env.PUBLISH_NPM != 'true'
-        run: echo "npm publish was not requested"
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-package
+          path: release
 
       - name: Create or refresh GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then

@@ -37,6 +37,12 @@ describe('safeText', () => {
     expect(safeText('a\u061cb\u2066c\u2069d')).toBe('abcd');
   });
 
+  it('strips default-ignorable characters outside the explicit ranges', () => {
+    // Soft hyphen, combining grapheme joiner and a supplementary variation
+    // selector all render invisibly and can make distinct names look equal.
+    expect(safeText('a\u00adb\u034fc\u{E0100}d')).toBe('abcd');
+  });
+
   it('keeps tabs and newlines as spaces rather than gluing words together', () => {
     expect(safeText('two\twords\nhere')).toBe('two words here');
   });
@@ -115,6 +121,13 @@ describe('redactUrl', () => {
     expect(redacted).not.toContain('AAExampleToken');
   });
 
+  it('does not leak a path key when prose punctuation follows the URL', () => {
+    const key = 'AbCdEf0123456789xyzQQ';
+    const redacted = redactMessage(`request to https://rpc.example.com/v2/${key}). failed`);
+    expect(redacted).not.toContain(key);
+    expect(redacted).toContain('/redacted');
+  });
+
   it('removes a fragment in case a configured endpoint put a credential there', () => {
     expect(redactUrl('https://rpc.example.com/path#secret-token')).toBe(
       'https://rpc.example.com/path#redacted',
@@ -139,6 +152,11 @@ describe('redactMessage', () => {
   it('scrubs a URL embedded in an error string', () => {
     const msg = 'request to https://polygon.example.com/v2/KEY0123456789abcdefgh failed';
     expect(redactMessage(msg)).toBe('request to https://polygon.example.com/v2/redacted failed');
+  });
+
+  it('recognises an upper-case URL scheme too', () => {
+    const msg = 'request to HTTPS://polygon.example.com/v2/KEY0123456789abcdefgh failed';
+    expect(redactMessage(msg)).not.toContain('KEY0123456789abcdefgh');
   });
 
   it('also strips terminal control characters from remote error text', () => {

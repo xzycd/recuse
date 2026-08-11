@@ -8,6 +8,24 @@ While this is `0.x`, both can change. From `1.0` the JSON shapes are the contrac
 
 Dates are the day the work landed, not the day it was published.
 
+## 0.8.1, 2026-08-11
+
+**A valid record from the wrong request is not a partial answer.** The historical trade index now checks the wallet and token encoded in every position id, checks payout rows against the exact token set requested, and verifies that `netValue` is exactly `valueBought - valueSold`. The last identity was documented as the basis of the profit column but `valueSold` was not even in the query, so a plausible wrong net cost could pass every check. Gamma pages, holder groups, repeated holder assets and activity-name lookups now get the same request-scope treatment. A source that ignores a filter fails the reading instead of lending another wallet's data to the requested one.
+
+Numeric and resource boundaries are explicit one layer earlier. Oversized Gamma quantities, holder amounts and cumulative holder sums are refused before they can poison concentration arithmetic. Embedded arrays, raw market pages and returned page sizes are bounded by what the caller asked to examine. A non-array HTTP 200 from the activity endpoint is a failed name lookup, not an unnamed wallet.
+
+**One settlement could send two alerts.** If Gamma appended `resolved` and moved prices to their terminal values in the same poll, the watcher emitted both `resolved` and the synthetic `settled` fallback. The fallback now exists only for feeds that omitted the lifecycle step. The spinner also sent the literal characters `[2K` instead of a terminal erase sequence and accumulated exit listeners after stopping; both are fixed.
+
+The interactive table now uses the same code-point-aware padding as the plain renderer, so an astral character in a market question cannot shift every column to its right. Invalid or enormous terminal dimensions fall back or cap before a render allocates a line. CLI diagnostics, site failures and additional invisible Unicode characters go through the same hostile-text boundary as API data. The site validates its public base URL, escapes sitemap locations and refuses to overwrite two markets whose remote slugs collapse to one filename.
+
+The public tagline no longer claims this build identifies who decided a resolution. Proposer, disputer and voter identities are still unread, so the release says what it can prove: it rebuilds what settlement erased. `winners --limit` also rejects values above its 100-row source ceiling instead of accepting them and silently returning fewer rows.
+
+**This is the first registry-shaped release.** Package metadata, the lockfile, CLI version, changelog and release examples are `0.8.1`; the README, generated site and update notice all use the npm install path. The package now carries its verified MCP name and `server.json` describes the fixed `serve --mcp` stdio invocation for the official registry. `v0.8.0` landed on `main` but was never tagged or published, so this release advances to `v0.8.1` rather than inventing a historical tag. The existing annotated `v0.7.0` remains untouched.
+
+The release workflow builds and tests without npm credentials or OIDC write permission. It uploads one checksummed tarball, then separate least-privilege jobs attach that artifact to GitHub and, only after an explicit dispatch through the `npm` environment, publish the exact same tarball with provenance. The `recuse` name was still unclaimed during this verification, so the first publication still needs the maintainer's one-time npm authentication. After that, the workflow moves to short-lived trusted publishing and the bootstrap token is deleted.
+
+The two runtime dependencies are pinned to the audited versions in this release. Dependabot can still propose each update as a reviewed change, while a new install no longer selects unreviewed runtime minors that were absent from the release checks.
+
 ## 0.8.0, 2026-08-11
 
 **The last release found the hole. This one fills it.**
