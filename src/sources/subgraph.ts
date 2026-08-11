@@ -81,11 +81,13 @@ export interface PositionScan {
 }
 
 interface RawPosition {
+  id?: string;
   user?: { id?: string };
   quantityBought?: string;
   quantitySold?: string;
   netQuantity?: string;
   valueBought?: string;
+  valueSold?: string;
   netValue?: string;
 }
 
@@ -109,15 +111,18 @@ export function toPosition(raw: RawPosition): TokenPosition | undefined {
   const sold = fromUnits(raw.quantitySold);
   const net = fromUnits(raw.netQuantity);
   const spent = fromUnits(raw.valueBought);
+  const received = fromUnits(raw.valueSold);
   const netSpent = fromUnits(raw.netValue);
 
   // Every field below changes the financial answer. A missing net cost is not a
   // free position, and a missing net quantity is not a position of zero.
   if (
     bought === undefined || sold === undefined || net === undefined
-    || spent === undefined || netSpent === undefined
+    || spent === undefined || received === undefined || netSpent === undefined
     || bought.value <= 0 || sold.value < 0 || net.value < 0 || spent.value < 0
+    || received.value < 0
     || net.integer !== bought.integer - sold.integer
+    || netSpent.integer !== spent.integer - received.integer
   ) return undefined;
 
   return {
@@ -196,7 +201,7 @@ export async function fetchTokenPositions(
     const units = (BigInt(effectiveFloor) * BigInt(UNIT)).toString();
     // The token id and the floor are both validated numerics by this point, so
     // there is nothing here a caller could inject a clause through.
-    const gql = `{ marketPositions(where: {market: "${token}", quantityBought_gt: "${units}"}, orderBy: quantityBought, orderDirection: desc, first: ${requested}) { user { id } quantityBought quantitySold netQuantity valueBought netValue } }`;
+    const gql = `{ marketPositions(where: {market: "${token}", quantityBought_gt: "${units}"}, orderBy: quantityBought, orderDirection: desc, first: ${requested}) { id user { id } quantityBought quantitySold netQuantity valueBought valueSold netValue } }`;
 
     try {
       const data = await query<{ marketPositions?: RawPosition[] }>(
@@ -205,7 +210,25 @@ export async function fetchTokenPositions(
       );
       if (!Array.isArray(data.marketPositions)) throw new Error('subgraph returned no position list');
       const rows = data.marketPositions;
-      const positions = rows.map(toPosition).filter((p): p is TokenPosition => p !== undefined);
+      const positions = rows.map((raw) => {
+        // A GraphQL `where` clause is still a request, not proof that the
+        // response honoured it. The entity id carries both sides of the join:
+        // wallet address followed by outcome token. A valid id naming another
+        // token means the market filter was ignored, and a prefix disagreeing
+        // with `user.id` means the row contradicts itself. Either invalidates
+        // the whole response rather than becoming a plausible position.
+        const idAddress = safeAddress(raw.id?.slice(0, 42));
+        const idToken = safeTokenId(raw.id?.slice(42));
+        const user = safeAddress(raw.user?.id);
+        if (idToken && idToken !== token) {
+          throw new Error('subgraph returned a position outside the requested token');
+        }
+        if (idAddress && user && idAddress !== user) {
+          throw new Error('subgraph returned a contradictory position identity');
+        }
+        if (!idAddress || !idToken || !user) return undefined;
+        return toPosition(raw);
+      }).filter((p): p is TokenPosition => p !== undefined);
       const dropped = rows.length - positions.length;
       if (rows.length > 0 && positions.length === 0) {
         throw new Error('subgraph returned no usable positions');
@@ -342,7 +365,7 @@ export async function fetchWalletPositions(
   for (const floor of ladder) {
     const effectiveFloor = Math.max(0, Math.floor(floor));
     const units = (BigInt(effectiveFloor) * BigInt(UNIT)).toString();
-    const gql = `{ marketPositions(where: {user: "${who}", netQuantity_gt: "${units}"}, orderBy: netQuantity, orderDirection: desc, first: ${requested}) { id quantityBought quantitySold netQuantity valueBought netValue } }`;
+    const gql = `{ marketPositions(where: {user: "${who}", netQuantity_gt: "${units}"}, orderBy: netQuantity, orderDirection: desc, first: ${requested}) { id quantityBought quantitySold netQuantity valueBought valueSold netValue } }`;
 
     try {
       const data = await query<{ marketPositions?: (RawPosition & { id?: string })[] }>(
@@ -354,11 +377,19 @@ export async function fetchWalletPositions(
       const positions: WalletPosition[] = [];
 
       for (const raw of rows) {
-        const base = toPosition({ ...raw, user: { id: who } });
         // The id is `0x` + 40 hex + the decimal token id, so the token starts
         // at 42. Anything that does not parse as a token id is dropped rather
         // than carried into a query.
+        const rowAddress = safeAddress(raw.id?.slice(0, 42));
         const tokenId = safeTokenId(raw.id?.slice(42));
+        // Never manufacture the requested wallet into the row. A valid prefix
+        // for someone else proves the user filter was ignored and invalidates
+        // the response. A malformed identity is counted with the other dropped
+        // rows, since it cannot be joined safely at all.
+        if (rowAddress && rowAddress !== who) {
+          throw new Error('subgraph returned a position outside the requested wallet');
+        }
+        const base = rowAddress ? toPosition({ ...raw, user: { id: rowAddress } }) : undefined;
         if (base && tokenId) positions.push({ ...base, tokenId });
       }
 
@@ -410,6 +441,7 @@ export async function fetchTokenPayouts(
   opts: { timeoutMs?: number } = {},
 ): Promise<{ byToken: Map<string, Payout>; asked: number; found: number; invalid: number; failed?: string }> {
   const clean = [...new Set(tokenIds.map((t) => safeTokenId(t)).filter((t): t is string => !!t))];
+  const requested = new Set(clean);
   const byToken = new Map<string, Payout>();
   if (clean.length === 0) return { byToken, asked: 0, found: 0, invalid: 0 };
 
@@ -437,6 +469,12 @@ export async function fetchTokenPayouts(
       if (!token || !conditionId) {
         invalid += 1;
         continue;
+      }
+      // Gamma and wallet joins trust this map to describe only the tokens that
+      // were asked for. A valid foreign id means the `id_in` filter was ignored,
+      // not an extra record that is safe to carry along.
+      if (!requested.has(token)) {
+        throw new Error('subgraph returned a payout outside the requested tokens');
       }
       if (byToken.has(token)) throw new Error('subgraph returned a duplicate payout token');
 

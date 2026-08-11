@@ -239,7 +239,7 @@ export interface Winner {
   netSpent: number;
 }
 
-/** A market plus everything we know about who decides it. */
+/** A market plus everything we can verify about its resolution and resulting ownership. */
 export interface Assessment {
   market: Market;
   dispute: DisputeState;

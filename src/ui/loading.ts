@@ -117,7 +117,7 @@ export function startSpinner(label: string, opts: SpinnerOptions): Spinner {
   const clear = () => {
     // Return to column zero, erase to end of line. No cursor save or restore,
     // which some terminals honour and some quietly drop.
-    stream.write('\r[2K');
+    stream.write('\r\x1b[2K');
   };
 
   const draw = () => {
@@ -148,6 +148,7 @@ export function startSpinner(label: string, opts: SpinnerOptions): Spinner {
     stopped = true;
     clearInterval(timer);
     clear();
+    process.off('exit', stop);
   };
 
   // A crash between start and stop would otherwise leave the terminal holding a

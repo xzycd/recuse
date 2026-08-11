@@ -1,0 +1,32 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.xzycd/recuse",
+  "title": "Recuse",
+  "description": "Read-only Polymarket resolution records: disputes, settlement positions and coverage limits.",
+  "repository": {
+    "url": "https://github.com/xzycd/recuse",
+    "source": "github",
+    "id": "1326028795"
+  },
+  "version": "0.8.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "recuse",
+      "version": "0.8.1",
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve"
+        },
+        {
+          "type": "positional",
+          "value": "--mcp"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

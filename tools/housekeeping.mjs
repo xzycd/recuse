@@ -49,34 +49,6 @@ function withoutFences(text) {
   });
 }
 
-/** Only the fenced code blocks, keeping line numbers intact. The inverse. */
-function fencedOnly(text) {
-  let fenced = false;
-  return text.split('\n').map((line) => {
-    if (/^\s*```/.test(line)) {
-      fenced = !fenced;
-      return '';
-    }
-    return fenced ? line : '';
-  });
-}
-
-/**
- * Install lines for a name that is not on the registry.
- *
- * `recuse` is not published, so `npx recuse` and `npm i -g recuse` are
- * instructions that 404 for anyone who copies them. The README claimed both for
- * five versions, was corrected, and says so in the file. The site generator went
- * on printing `npx recuse` on every page for another release, four separate
- * times, because prose gets reread and a generator does not.
- *
- * Checked in the two places the claim can reach someone: a fenced block in the
- * prose, which is what people copy, and a non-comment line in a tool, which is
- * what gets rendered. Delete this rule the day the name is published, which is
- * the day it stops being a lie.
- */
-const UNPUBLISHED = /\bnpx recuse\b|\bnpm i(?:nstall)? -g recuse\b/;
-
 function check(file, lines, pattern, rule) {
   lines.forEach((line, i) => {
     if (pattern.test(line)) failures.push(`${file}:${i + 1}  ${rule}\n    ${line.trim()}`);
@@ -98,11 +70,6 @@ for (const file of PROSE) {
 
   check(file, lines, /—/, 'em dash in prose');
   check(file, lines, /\p{Extended_Pictographic}/u, 'emoji in prose');
-
-  // Inside the fences rather than outside them. Naming the command while
-  // explaining that it does not work is the correct thing to write; putting it
-  // in a block someone copies is the failure.
-  check(file, fencedOnly(text), UNPUBLISHED, 'install line for an unpublished name');
 }
 
 // Comments and strings in source. The renderers hold the no-data glyph as a
@@ -123,14 +90,33 @@ for (const file of sources) {
     if (isComment && line.replace(/`[^`]*`/g, '').includes('—')) {
       failures.push(`${file}:${i + 1}  em dash in a comment\n    ${line.trim()}`);
     }
-    // Code, not commentary. A tool that writes the claim into a page is the
-    // case this exists for.
-    if (!isComment && UNPUBLISHED.test(line)) {
-      failures.push(
-        `${file}:${i + 1}  install line for an unpublished name\n    ${line.trim()}`,
-      );
-    }
   });
+}
+
+// Release metadata has drifted before. Keep the package, lock and changelog on
+// one version so a tag cannot build a tarball carrying a different number.
+const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'));
+const lockedVersion = lock.packages?.['']?.version;
+if (pkg.version !== lockedVersion) {
+  failures.push(
+    `package-lock.json  root version ${lockedVersion ?? 'missing'} does not match ${pkg.version}`,
+  );
+}
+const changelog = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8');
+if (!changelog.includes(`## ${pkg.version},`)) {
+  failures.push(`CHANGELOG.md  no release heading for package version ${pkg.version}`);
+}
+const server = JSON.parse(readFileSync(join(ROOT, 'server.json'), 'utf8'));
+const npmPackage = server.packages?.find((entry) => entry.registryType === 'npm');
+if (server.name !== pkg.mcpName) {
+  failures.push(`server.json  name ${server.name ?? 'missing'} does not match ${pkg.mcpName}`);
+}
+if (server.version !== pkg.version || npmPackage?.version !== pkg.version) {
+  failures.push(`server.json  version does not match package version ${pkg.version}`);
+}
+if (npmPackage?.identifier !== pkg.name) {
+  failures.push(`server.json  npm package does not match ${pkg.name}`);
 }
 
 /*

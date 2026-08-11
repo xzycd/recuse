@@ -53,6 +53,13 @@ function isUnsafeCodePoint(cp: number): boolean {
   return false;
 }
 
+// Unicode adds invisible formatting characters outside the hand-written
+// ranges above. Default_Ignorable_Code_Point covers soft hyphens, combining
+// grapheme joiners, supplementary variation selectors and future additions.
+// Node 22 is the runtime floor, so this binary property is available anywhere
+// the package runs.
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
+
 /** Longest remote string we will keep. Anything past this is padding or attack. */
 const MAX_TEXT = 300;
 
@@ -78,7 +85,7 @@ export function safeText(value: unknown, max = MAX_TEXT): string {
   for (const ch of bounded) {
     const cp = ch.codePointAt(0);
     if (cp === undefined) continue;
-    if (isUnsafeCodePoint(cp)) {
+    if (isUnsafeCodePoint(cp) || DEFAULT_IGNORABLE.test(ch)) {
       // Tabs and newlines are real whitespace in the source data even though
       // they are control characters, so they become a space rather than
       // vanishing and gluing two words together.
@@ -166,8 +173,12 @@ export function redactUrl(value: string): string {
       // A malformed escape stays as text and is tested by the conservative
       // opaque-segment rule below.
     }
-    const opaque = /^[A-Za-z0-9_-]{20,}$/.test(decoded);
-    const telegramBot = /^bot\d{5,}:[A-Za-z0-9_-]{15,}$/.test(decoded);
+    // Error messages often put a closing parenthesis or full stop directly
+    // after a URL. Treat trailing punctuation as part of a secret-bearing
+    // segment rather than letting it defeat an anchored key check.
+    const trailing = '(?:[^A-Za-z0-9_-].*)?';
+    const opaque = new RegExp(`^[A-Za-z0-9_-]{20,}${trailing}$`).test(decoded);
+    const telegramBot = new RegExp(`^bot\\d{5,}:[A-Za-z0-9_-]{15,}${trailing}$`).test(decoded);
     return opaque || telegramBot ? 'redacted' : seg;
   });
   url.pathname = segments.join('/');
@@ -178,7 +189,7 @@ export function redactUrl(value: string): string {
 
 /** Scrub every URL-shaped substring out of arbitrary error text. */
 export function redactMessage(message: string): string {
-  const redacted = message.replace(/https?:\/\/[^\s'"]+/g, (match) => redactUrl(match));
+  const redacted = message.replace(/https?:\/\/[^\s'"]+/gi, (match) => redactUrl(match));
   // Error text can come from a remote JSON body too. It reaches stderr, MCP
   // and caveats, so credentials and terminal controls have to be removed at
   // the same boundary.

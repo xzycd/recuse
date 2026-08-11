@@ -20,6 +20,19 @@ export interface Style {
   depth: ColourDepth;
 }
 
+/** Refuse dimensions that can make one render allocate an unbounded line. */
+const MAX_RENDER_WIDTH = 10_000;
+
+export function normaliseWidth(value: unknown, fallback = 80): number {
+  const numeric = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim() !== ''
+      ? Number(value)
+      : Number.NaN;
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  return Math.min(MAX_RENDER_WIDTH, Math.max(1, Math.floor(numeric)));
+}
+
 /** Honour NO_COLOR, a non-TTY pipe, and an explicit override, in that order. */
 export function detectStyle(opts: { colour?: boolean; width?: number; theme?: string } = {}): Style {
   const isTty = process.stdout.isTTY === true;
@@ -33,7 +46,11 @@ export function detectStyle(opts: { colour?: boolean; width?: number; theme?: st
   return {
     colour: depth > 0,
     // COLUMNS wins when set so the behaviour can be tested without a terminal.
-    width: opts.width ?? (Number(process.env.COLUMNS) || process.stdout.columns || 80),
+    width: opts.width !== undefined
+      ? normaliseWidth(opts.width)
+      : process.env.COLUMNS !== undefined
+        ? normaliseWidth(process.env.COLUMNS, normaliseWidth(process.stdout.columns))
+        : normaliseWidth(process.stdout.columns),
     theme,
     depth,
   };

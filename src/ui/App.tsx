@@ -24,7 +24,9 @@ import {
   filterAssessments, nextSort, SORT_LABELS, sortAssessments, viewport, type SortMode,
 } from '../core/rank.js';
 import type { Movement } from '../core/recall.js';
-import { clip, count, meter, money, pct, until } from './format.js';
+import {
+  clip, count, meter, money, normaliseWidth, padEnd, padStart, pct, until,
+} from './format.js';
 import { FACE, WORDMARK } from './logo.js';
 import { THEMES, themeNames, type Theme } from './theme.js';
 import type { Assessment } from '../types.js';
@@ -76,13 +78,19 @@ export function App({
   const [theme, setTheme] = useState(initial);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
-  const [size, setSize] = useState({ w: stdout?.columns ?? 80, h: stdout?.rows ?? 24 });
+  const [size, setSize] = useState({
+    w: normaliseWidth(stdout?.columns),
+    h: normaliseWidth(stdout?.rows, 24),
+  });
 
   // A resize that is not handled leaves a table wrapping into garbage, which
   // in a dense layout is worse than not rendering at all.
   useEffect(() => {
     if (!stdout) return;
-    const onResize = () => setSize({ w: stdout.columns ?? 80, h: stdout.rows ?? 24 });
+    const onResize = () => setSize({
+      w: normaliseWidth(stdout.columns),
+      h: normaliseWidth(stdout.rows, 24),
+    });
     stdout.on('resize', onResize);
     return () => {
       stdout.off('resize', onResize);
@@ -201,13 +209,13 @@ export function App({
 
       <Text color={theme.dim}>
         {'  '}
-        {'MARKET'.padEnd(nameW)}
-        {'RDS'.padStart(5)}
-        {'WIPED'.padStart(9)}
-        {'TOP 5 HELD'.padStart(16)}
-        {cols.pool ? 'POOL'.padStart(9) : ''}
-        {cols.lifecycle ? '  ' + 'LIFECYCLE'.padEnd(22) : ''}
-        {cols.clock ? 'ENDS'.padStart(7) : ''}
+        {padEnd('MARKET', nameW)}
+        {padStart('RDS', 5)}
+        {padStart('WIPED', 9)}
+        {padStart('TOP 5 HELD', 16)}
+        {cols.pool ? padStart('POOL', 9) : ''}
+        {cols.lifecycle ? '  ' + padEnd('LIFECYCLE', 22) : ''}
+        {cols.clock ? padStart('ENDS', 7) : ''}
       </Text>
 
       {visible.length === 0 ? (
@@ -231,19 +239,19 @@ export function App({
                 and nothing else. Both shades here are existing chrome. */}
             <Text color={mark === '·' ? theme.dim : theme.accent}>{mark}</Text>
             <Text color={on ? theme.accent : theme.text} bold={on}>
-              {clip(a.market.question, nameW).padEnd(nameW)}
+              {padEnd(a.market.question, nameW)}
             </Text>
-            <Text color={roundsColour(n)}>{(n > 0 ? `${n}×` : '·').padStart(5)}</Text>
+            <Text color={roundsColour(n)}>{padStart(n > 0 ? `${n}×` : '·', 5)}</Text>
             <Text color={theme.text}>
-              {(c && c.meaning === 'wiped' ? count(c.totalSize) : '—').padStart(9)}
+              {padStart(c && c.meaning === 'wiped' ? count(c.totalSize) : '—', 9)}
               {/* The share never appears without the terms behind it. */}
-              {(c ? `${meter(c.topShare)} ${pct(c.topShare)} ${c.topN}/${c.holderCount}` : '—').padStart(16)}
-              {cols.pool ? money(a.pool).padStart(9) : ''}
+              {padStart(c ? `${meter(c.topShare)} ${pct(c.topShare)} ${c.topN}/${c.holderCount}` : '—', 16)}
+              {cols.pool ? padStart(money(a.pool), 9) : ''}
             </Text>
             {cols.lifecycle ? (
-              <Text color={theme.dim}>{'  ' + clip(formatSteps(a.dispute.steps), 22).padEnd(22)}</Text>
+              <Text color={theme.dim}>{'  ' + padEnd(formatSteps(a.dispute.steps), 22)}</Text>
             ) : null}
-            {cols.clock ? <Text color={theme.text}>{until(a.dispute.deadline).padStart(7)}</Text> : null}
+            {cols.clock ? <Text color={theme.text}>{padStart(until(a.dispute.deadline), 7)}</Text> : null}
           </Text>
         );
       })}
@@ -304,7 +312,7 @@ function Help({ theme, width }: { theme: Theme; width: number }) {
       <Text color={theme.rule}>{'─'.repeat(width)}</Text>
       {keys.map(([k, what]) => (
         <Text key={k}>
-          <Text color={theme.accent}>{'  ' + k.padEnd(12)}</Text>
+          <Text color={theme.accent}>{'  ' + padEnd(k, 12)}</Text>
           <Text color={theme.text}>{clip(what, Math.max(10, width - 16))}</Text>
         </Text>
       ))}
@@ -323,7 +331,7 @@ function Detail({
   const c = a.concentration;
   const wc = a.winnerConcentration;
   const paid = a.winners ? winnerMoney(a.winners) : undefined;
-  const label = (t: string) => t.padEnd(14);
+  const label = (t: string) => padEnd(t, 14);
   const roundsColour = (n: number) => theme.ramp[n === 0 ? 0 : n === 1 ? 1 : 2];
 
   return (

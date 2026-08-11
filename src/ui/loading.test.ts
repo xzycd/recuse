@@ -36,7 +36,16 @@ describe('startSpinner', () => {
   it('erases the line it drew, so the next prompt is not sitting on a spinner', () => {
     const { stream, written } = fakeStream(true);
     startSpinner('scanning', opts(stream)).stop();
-    expect(written[written.length - 1]).toBe('\r[2K');
+    expect(written[written.length - 1]).toBe('\r\x1b[2K');
+  });
+
+  it('removes its crash cleanup listener after a normal stop', () => {
+    const { stream } = fakeStream(true);
+    const before = process.listenerCount('exit');
+    const spinner = startSpinner('scanning', opts(stream));
+    expect(process.listenerCount('exit')).toBe(before + 1);
+    spinner.stop();
+    expect(process.listenerCount('exit')).toBe(before);
   });
 
   it('survives being stopped twice', () => {

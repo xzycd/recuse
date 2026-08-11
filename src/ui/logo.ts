@@ -44,7 +44,7 @@ export const FACE = [
 export const FACE_WIDTH = 9;
 
 /** What the tool is, in one line, for directly under the wordmark. */
-export const TAGLINE = 'who decided this market, and what did they own';
+export const TAGLINE = 'rebuild what settlement erased';
 
 /** Below this the face is dropped, below WORDMARK_WIDTH + 5 so is the wordmark. */
 const FACE_MIN_WIDTH = FACE_WIDTH + 2 + TAGLINE.length + 2;

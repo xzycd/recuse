@@ -27,6 +27,11 @@ describe('indexOfToken', () => {
   it('returns undefined rather than a default for a token it does not know', () => {
     expect(indexOfToken(market(), '999')).toBeUndefined();
   });
+
+  it('refuses a token id assigned to more than one outcome', () => {
+    expect(indexOfToken(market({ tokenIds: ['1038641317', '1038641317'] }), '1038641317'))
+      .toBeUndefined();
+  });
 });
 
 describe('payoutFor', () => {

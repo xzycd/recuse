@@ -155,6 +155,19 @@ describe('compare, changes', () => {
     expect(events.map((e) => e.kind)).toEqual(['settled']);
   });
 
+  it('does not duplicate a settlement reported by both lifecycle and price', () => {
+    const before = seenWith(['proposed', 'disputed'], false);
+    const { events } = compare(
+      before,
+      market({
+        resolutionSteps: ['proposed', 'disputed', 'resolved'],
+        outcomePrices: [0, 1],
+      }),
+      opts,
+    );
+    expect(events.map((e) => e.kind)).toEqual(['resolved']);
+  });
+
   it('does not report the same settlement twice', () => {
     const before = seenWith(['proposed', 'disputed'], true);
     const { events } = compare(

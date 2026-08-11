@@ -27,16 +27,10 @@ const TIMEOUT_MS = 2_000;
  * The command a person is told to run, in one place because it was wrong in
  * two.
  *
- * This printed `npm i -g recuse` for a name that is not on the registry, so the
- * one instruction the update path exists to give was an instruction that 404s.
- * It is the same claim the README was corrected for and the site kept printing,
- * and it survived here longest because you only see it on the day a newer
- * version exists, which for an unpublished package is no day at all.
- *
- * When the name is published this becomes `npm i -g recuse` and the rule in
- * tools/housekeeping.mjs that forbids writing that goes away with it.
+ * This used to point at a GitHub install while the package name was unclaimed.
+ * Keep this registry command aligned with the README and generated site.
  */
-export const INSTALL_COMMAND = 'npm i -g github:xzycd/recuse';
+export const INSTALL_COMMAND = 'npm i -g recuse';
 
 export interface UpdateStatus {
   current: string;

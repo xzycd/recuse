@@ -43,6 +43,6 @@ describe('updateNotice', () => {
     // registry name while the package was not on the registry, so the test
     // agreed with the code and both were wrong.
     expect(notice).toContain(INSTALL_COMMAND);
-    expect(INSTALL_COMMAND).toMatch(/^npm i -g github:/);
+    expect(INSTALL_COMMAND).toBe('npm i -g recuse');
   });
 });

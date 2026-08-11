@@ -48,6 +48,17 @@ describe('tokenIdForSide', () => {
     expect(tokenIdForSide(m, 'YES')).toBe('22');
     expect(tokenIdForSide(m, 'NO')).toBe('11');
   });
+
+  it('refuses a token id that ambiguously names both sides', () => {
+    const m = market({ tokenIds: ['11', '11'] });
+    expect(tokenIdForSide(m, 'YES')).toBeUndefined();
+    expect(tokenIdForSide(m, 'NO')).toBeUndefined();
+  });
+
+  it('refuses two outcome labels that ambiguously name one side', () => {
+    const m = market({ outcomes: ['Yes', 'Yes'], tokenIds: ['11', '22'] });
+    expect(tokenIdForSide(m, 'YES')).toBeUndefined();
+  });
 });
 
 describe('assessWallet input', () => {

@@ -1,6 +1,8 @@
 <img src="assets/banner.svg" alt="recuse" width="100%">
 
-Polymarket markets do not settle on facts. They settle on a vote. Someone proposes an outcome with a $500 bond, anyone can bond against it, and contested markets go to UMA token holders. `recuse` reads that record: which markets were fought over, how many rounds it took, who was left holding the losing side, and who quietly bought the winning one.
+Polymarket markets settle through an oracle process, not from the final wallet balances. Someone proposes an outcome, anyone can bond against it, and contested markets can go to UMA token holders. `recuse` reads the observable settlement record: which markets were fought over, how many rounds it took, who was left holding the losing side, and who quietly bought the winning one.
+
+Wallet trackers show what remains. `recuse` rebuilds what settled.
 
 Point it at a market and it tells you what happened to the resolution. Run it bare and it ranks every contested market it can find, most contested first. Everything it prints, it will also emit as JSON.
 
@@ -21,15 +23,16 @@ The suit market went five rounds. 52.1 million tokens went to zero when it final
 ## Install
 
 ```sh
-npm i -g github:xzycd/recuse
+npm i -g recuse
 ```
 
 Node 22 or newer. No API keys, no account, no config file.
 
-Not on the npm registry yet, so there is no `npx recuse` and there is no
-`npm i -g recuse`. Both were in this file before they were true, which is a
-small version of the thing this tool exists to catch, so they are gone until
-the name is published.
+For one run without a global install:
+
+```sh
+npx recuse
+```
 
 ## Use
 

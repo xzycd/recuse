@@ -140,7 +140,7 @@ function banner() {
     .map((r) => `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}"/>`)
     .join('\n    ');
 
-  const tagline = 'who decided this market, and what did they own';
+  const tagline = 'rebuild what settlement erased';
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="recuse">
   <rect width="${W}" height="${H}" rx="18" fill="${PALETTE.ink}"/>
@@ -195,7 +195,7 @@ ${face(268, 320, 118, PALETTE.face, 'face-social')}
     ${bars}
   </g>
   <text x="440" y="392" textLength="${width - 2}" lengthAdjust="spacingAndGlyphs"
-        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="25" fill="${PALETTE.dim}">who decided this market, and what did they own</text>
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="25" fill="${PALETTE.dim}">rebuild what settlement erased</text>
   <text x="440" y="436" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="25" fill="${PALETTE.ramp[2]}">1,150 disputed markets in 2026</text>
 </svg>
 `;
