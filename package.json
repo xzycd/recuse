@@ -38,7 +38,7 @@
     "prepare": "node tools/prepare.mjs"
   },
   "dependencies": {
-    "ink": "6.8.0",
+    "ink": "7.1.1",
     "react": "19.2.8"
   },
   "devDependencies": {
