@@ -8,7 +8,7 @@ While this is `0.x`, both can change. From `1.0` the JSON shapes are the contrac
 
 Dates are the day the work landed, not the day it was published.
 
-## 0.8.0, 2026-08-10
+## 0.8.0, 2026-08-11
 
 **The last release found the hole. This one fills it.**
 
@@ -16,7 +16,9 @@ Dates are the day the work landed, not the day it was published.
 
 Polymarket serves its own trade log, one record per fill, and it is current. `recuse` asks the index first, because where it reaches it counts back to a market's first trade with no floor and no ceiling. Where it does not reach, the log answers, and every reading says which of the two it stood on. On a market the index had covered, the log reproduced its winning side to within 0.2% on every wallet of the top six, in the same order.
 
-`recuse regulars --scan 600` went from 20 markets scored to 38, and from 494 winning wallets to 666.
+`recuse regulars --scan 600` went from 20 markets scored to 34, and from 494 winning wallets to 751. Of the 25 contested markets past the old index head, the live log recovered 21 and left four explicitly unread.
+
+Live-log winner reconstruction now removes wallets that sold out before applying the per-market row limit. Limiting first let a large historical buyer consume a slot even though it held nothing at settlement, which could hide a smaller wallet that actually carried the winning side. This is why the corrected live tally is higher than the first 0.8 reading.
 
 Two properties of that log decide the shape of everything built on it, and both are stated in every reading rather than assumed away.
 
@@ -24,7 +26,7 @@ Two properties of that log decide the shape of everything built on it, and both 
 
 Paging stops at offset 10,000, so the reachable window is the 20,000 most recent fills, and 28 of those 38 markets have more. The way through is a minimum trade size in dollars, the same bargain the index already demanded in tokens: a market read whole above a floor beats the most recent slice of one. The floor that worked travels with the data and is printed under the table. Where even the top of the ladder is not enough, the reading says the history was cut and that its totals are partial rather than cumulative, which is a worse statement than a floor and is not allowed to share a sentence with one.
 
-**`recuse wallet` returned nothing at all for a live wallet.** It read positions from the same index, so a wallet whose trading is all after January came back as `no positions found for this address`, with `"entries": []` over `--json` and a clean empty record over MCP. Measured on one holding 5,811,667 tokens across two contested markets it had lost. It reads the trade log when the index is empty, and the conditions come from the trades themselves, since the index maps token to market only as far as its own head.
+**`recuse wallet` returned nothing at all for a live wallet.** It read positions from the same index, so a wallet whose trading is all after January came back as `no positions found for this address`, with `"entries": []` over `--json` and a clean empty record over MCP. Measured on one holding 5,811,667 tokens across two contested markets it had lost. The live log is now the primary wallet source, because a nonempty old-index record can still omit every newer market. The conditions come from the trades themselves, since the index maps token to market only as far as its own head, and the old index remains an explicitly dated fallback when the current source refuses.
 
 Payouts stop at that head too, silently, with `found: 0` and no error. Where the chain payout is unreadable the market's closing prices stand in, and only there. That fallback refuses an open market, refuses a price that does not land on a half, and refuses prices that do not divide a dollar between them, because pricing a live position off an opinion is the failure it would otherwise introduce.
 
@@ -32,7 +34,9 @@ Payouts stop at that head too, silently, with `found: 0` and no error. Where the
 
 **Caveats wrap instead of being cut.** Every surface printed them clipped to the terminal, so the longest one in the tool, the one naming where the index stops and what was read instead, ended at "so t…" in eighty columns. A caveat exists to let a reader discount the number above it and one cut before its own verb cannot. Cutting is right for a table cell and wrong for a sentence.
 
-Also: `recuse --version`, which every other CLI has and this one answered with `unknown option`. It prints the number and nothing else, because the one thing it is for is being compared against something.
+Also: `recuse --version`, which every other CLI has and this one answered with `unknown option`. In plain mode it prints the number and nothing else, because the one thing it is for is being compared against something.
+
+The production reconciliation verifies that every returned trade belongs to the requested market or wallet, meets the requested cash floor, stays within the requested page size and maps each token to one condition. Malformed rows are counted on every surface. A successful upstream response is not accepted as proof that its filters were honored, which is the same boundary that already protects Gamma lookups.
 
 And a footer claiming 22 of 18 markets were rescued, because one counter was doing the work of two.
 

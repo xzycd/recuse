@@ -10,9 +10,8 @@ src/
     http.ts       fetch with timeout, backoff, a body size cap, embedded JSON
     gamma.ts      market catalogue and resolution lifecycles
     dataapi.ts    current balances, with the display names accounts chose
-    subgraph.ts   cumulative trades, which is how the winning side is recovered,
-                  and the index head, which is how far back that recovery works
-    trades.ts     the trade log, which is current and answers past that head
+    subgraph.ts   cumulative positions through the old index head, plus payouts
+    trades.ts     the current trade log, with request-scope and paging checks
     chain.ts      the oracle layer, unbuilt. reports that it read nothing,
                   and validates RECUSE_RPC_URL on every reading
   core/       pure logic, no I/O except where noted
@@ -20,7 +19,7 @@ src/
     dispute.ts    parses umaResolutionStatuses into rounds, phase, clock
     capture.ts    which side is measurable, concentration, repeat tallies
     rebuild.ts    cumulative positions summed out of fills. pure
-    wallet.ts     one wallet's ledger, priced from the on-chain payout. pure
+    wallet.ts     one wallet's ledger, chain payout first, closing-price fallback. pure
     rank.ts       sort order, filtering, viewport. pure
     watch.ts      what counts as a resolution moving. pure
     recall.ts     what moved since the last radar run. pure, reuses watch.ts
@@ -47,7 +46,7 @@ tools/
   reachable.mjs     which symbols the entry point can get to. pure, tested
   housekeeping.mjs  the house rules, checked. run by CI
 .github/workflows/
-  ci.yml      build, test and check on node 20 and 22
+  ci.yml      typecheck, build, test, audit and check on node 22 and 24
   site.yml    nightly site build, publishes to Pages
 ```
 
@@ -56,7 +55,7 @@ tools/
 ## Commands
 
 ```sh
-npm test          # 366 tests, no network, sub-second
+npm test          # offline suite, normally around a second
 npm run build     # tsc, output to dist/
 npm run dev       # tsc --watch
 npm run check     # the house rules below, enforced
@@ -66,7 +65,7 @@ recuse serve --mcp    # answer over MCP on stdin and stdout
 recuse regulars       # wallets that won more than one contested market
 ```
 
-CI runs `build`, `test` and `check` on Node 20 and 22 for every push and pull request. The site rebuilds nightly and publishes to Pages, and refuses to publish a snapshot with fewer than five pages, because a scan that returned nothing is a failed scan rather than an empty day.
+CI runs the strict test typecheck, build, tests, production audit and project checks on Node 22 and 24 for every push and pull request. The site rebuilds nightly and publishes to Pages, and refuses to publish a snapshot with fewer than five pages, because a scan that returned nothing is a failed scan rather than an empty day.
 
 ## Testing policy
 
@@ -86,7 +85,7 @@ Before trusting a change to anything that touches an API, run it against live da
 
 **That log pages to 20,000 records and no further.** Offsets past 10,000 come back as `max historical trades offset of 10000 exceeded`, in a JSON object, with HTTP 200. A reader that treats a non-list body as the end of the data silently shortens every busy market. Use `filterType=CASH` with a dollar floor to read a market whole rather than reading the most recent slice of one, and report the floor.
 
-**Winners are invisible in balances.** They redeem and their balances go to zero. On the Zelenskyy market the winning side shows 907 tokens in `data-api` and 71,435,381 in the subgraph. Anything reasoning about "who won" from current holders is wrong. Use `sources/subgraph.ts`, and never add a balance to a cumulative buy.
+**Winners are invisible in balances.** They redeem and their balances go to zero. On the Zelenskyy market the winning side shows 907 tokens in `data-api` and 71,435,381 in the old index. Anything reasoning about "who won" from current holders is wrong. Use a validated trade source, and never add a balance to a cumulative buy.
 
 **The subgraph needs a lower bound to answer at all.** `where market = X order by quantityBought desc` times out in the store without a `quantityBought_gt` floor, and intermittently even with one. `fetchTokenPositions` escalates the floor and reports which one worked. That floor is a fact about the reading, not a display preference, so it travels with the data.
 
@@ -181,7 +180,7 @@ A running log. One line each, added when something cost real time to find out an
 - Gamma answered a `conditionId` filter it did not recognise with its default page, and the code believed the first row. Verify every lookup against what was asked.
 - Concentration was measured on the winning side, which redemption empties. The observable side of a settled market is the losing one.
 - An oracle scan reported a confident zero after all thirty of its windows failed on rate limits. Anything that scans returns its failure count.
-- The subgraph recovers the winning side, and `netValue` is exactly `valueBought - valueSold`, so profit is arithmetic rather than an estimate.
+- The historical index and current trade log recover the winning side. Their net cost is buys minus sells, so profit is arithmetic rather than an estimate.
 - A `players` rate column read 100% on every row, because everyone visible in a settled book is a loser. A number that cannot vary is not a finding.
 - `safeEndpoint` sat written and unwired for an hour and read exactly like a working defence in review. Grep for call sites, not for definitions.
 - `padEnd` counts UTF-16 units, so two emoji in a market question shift every column to their right by one cell.
@@ -208,6 +207,7 @@ A running log. One line each, added when something cost real time to find out an
 - `umaResolutionStatuses` is bare strings with no per-step outcome, so what was proposed in each round, and whether a dispute changed the answer, is not recoverable from Gamma.
 - The winning side has a second source and it is current. `data-api` serves a trade log, one record per fill, filterable by market or by wallet. Above a cash floor it reproduced the subgraph's top six wallets within 0.2%, in the same order, on a market the subgraph had indexed. The subgraph stays first where it reaches, because it needs no floor and counts back to the first trade.
 - `takerOnly` on that endpoint defaults to true, which is one side of each fill and looks exactly like the whole market. That default cost 40% of some wallet totals and nothing in the response mentioned it. Read the parameter list of any endpoint before trusting its shape.
+- The trade endpoint accepts `market`, `user`, cash-floor and paging parameters, but a successful response is not proof it honored them. Verify every returned condition, wallet, floor and page size before summing a cent. Gamma already demonstrated why request parameters are claims rather than controls.
 - The chain payout stops at the same head the trades do. `fetchTokenPayouts` on a token from this year returns `found: 0` with no error, so a ledger built on it prices every recent position at nothing. Gamma's closing prices stand in, and only where the chain answered with nothing.
 - A position the wallet had traded out of before settlement was neither won nor lost. It could not arise while positions came from the index, which was asked for survivors only, and it is ordinary in the log. `exited` counts it, and its trading profit stays in the total.
 - `Number(null)` is 0, and a range check catches that only where zero is illegal. Size and timestamp were safe; price was not, because a losing side really does trade at zero. Check for the absence itself, not for a value the absence happens to produce.

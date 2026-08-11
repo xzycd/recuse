@@ -280,7 +280,9 @@ export function recuseTools(engine: Engine): McpTool[] {
               ? [`the trade index stops at ${a.tradeIndexEndsAt.slice(0, 10)} and this market closed after that, and nothing else could read it either, so an empty winners list here means not read and never means nobody won`]
               : []),
             ...(a.tradeLog
-              ? [`the trade index does not reach this market, so the winning side was rebuilt from ${a.tradeLog.read} trades in the log${a.tradeLog.floor > 0 ? `, counting only trades of $${a.tradeLog.floor} or more` : ''}`]
+              ? [a.tradeIndexEndsAt
+                ? `the trade index does not reach this market, so the winning side was rebuilt from ${a.tradeLog.read} trades in the log${a.tradeLog.floor > 0 ? `, counting only trades of $${a.tradeLog.floor} or more` : ''}`
+                : `the trade index did not provide the winning side, so it was rebuilt from ${a.tradeLog.read} trades in the log${a.tradeLog.floor > 0 ? `, counting only trades of $${a.tradeLog.floor} or more` : ''}`]
               : []),
             ...(a.tradeLog?.truncated
               ? ['the log was cut at the most recent trades it will page to, so these totals are partial and are not cumulative buys']
@@ -357,10 +359,13 @@ export function recuseTools(engine: Engine): McpTool[] {
               ? [`${s.logCut} markets had more trades than the log will page to, so their wallet totals are the most recent trades rather than every trade`]
               : []),
             ...(s.coverageUnknown > 0
-              ? [`${s.coverageUnknown} empty market readings had unknown trade-index coverage and were not counted`]
+              ? [`${s.coverageUnknown} markets had unknown trade-index coverage, the live log also failed, and they were not counted`]
               : []),
             ...(s.positionsDropped > 0
               ? [`${s.positionsDropped} malformed winning-position rows were omitted`]
+              : []),
+            ...(s.tradesDropped > 0
+              ? [`${s.tradesDropped} malformed live-log trade rows were omitted`]
               : []),
             ...(s.undecided > 0 ? [`${s.undecided} contested markets have not settled and were skipped`] : []),
             ...(s.floorHigh > 0
@@ -383,10 +388,11 @@ export function recuseTools(engine: Engine): McpTool[] {
     {
       name: 'wallet_record',
       description:
-        'One wallet\'s settlement positions across resolved Polymarket markets, disputed ones first: which side it held, '
-        + 'whether that side won, and the net in dollars. Positions come from cumulative trades and '
-        + 'settlement from the on-chain payout, so a wallet that redeemed and vanished from every '
-        + 'balance-based tracker is still fully visible. A wallet appearing on both sides of one market is '
+        'One wallet\'s traded positions across Polymarket markets, disputed ones first: which side it held, '
+        + 'whether that side won, and the net in dollars. Positions come from cumulative trades. Settlement '
+        + 'comes from the on-chain payout, with exact closing prices used only where that payout index is behind, '
+        + 'so a wallet that redeemed and vanished from every balance-based tracker is still visible. '
+        + 'A wallet appearing on both sides of one market is '
         + 'a spread, not a contradiction. Repeat the caveats and limits fields in any answer built on this.',
       inputSchema: {
         type: 'object',
@@ -437,7 +443,7 @@ export function recuseTools(engine: Engine): McpTool[] {
             'a profitable record is a record of being right, and this tool cannot tell that from anything else',
             'exited means the position was closed before the market settled, so it neither won nor lost and its profit came from trading',
             'only the positions read are summarised here, so the totals cover the positions listed and not the wallet\'s whole history',
-            'positions sold before settlement and positions at or below the reported floor are absent',
+            'the totals cover only the source span and row limit disclosed in caveats. the live log includes exited positions, while an older-index fallback contains survivors only',
           ],
         };
       },

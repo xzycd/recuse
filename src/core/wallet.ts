@@ -96,6 +96,8 @@ export interface PayoutLike {
  * market always divide exactly one dollar between them.
  */
 export function payoutFromPrices(market: Market): PayoutLike | undefined {
+  if (!market.closed) return undefined;
+
   const prices: number[] = [];
   for (const price of market.outcomePrices) {
     if (typeof price !== 'number' || !Number.isFinite(price) || price < 0 || price > 1) {

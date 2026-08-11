@@ -73,14 +73,14 @@ function settle(running: Running): RebuiltPosition {
 }
 
 /**
- * Who bought one outcome token, largest buyer first.
+ * Who carried one outcome token into settlement, largest buyer first.
  *
  * Selected on the token id rather than on the outcome text. The text is a label
  * chosen by whoever wrote the market and two markets in a scan can both call a
  * side "Yes"; the id is what the payout is settled against. A wallet that only
- * ever sold this token is dropped, because it never held a position to be paid
- * on and listing it among the buyers would be a claim about a purchase that
- * never happened.
+ * sold, or bought and then sold out, is dropped because it held nothing to be
+ * paid on. This filtering happens before callers apply a row limit, so exited
+ * large buyers cannot hide smaller wallets that carried the winning side.
  */
 export function positionsForToken(trades: TradeLike[], tokenId: string): RebuiltPosition[] {
   const by = new Map<string, Running>();
@@ -98,6 +98,7 @@ export function positionsForToken(trades: TradeLike[], tokenId: string): Rebuilt
   return [...by.values()]
     .filter((r) => r.bought > 0)
     .map(settle)
+    .filter((position) => position.net > 0)
     .sort((a, b) => b.bought - a.bought);
 }
 

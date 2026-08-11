@@ -312,20 +312,22 @@ recuse regulars
 
 ```
 ADDRESS       NAME                          WON   OF   TOKENS      NET
-0xc8ab…6418   ArmageddonRewardsBilly         11   20     2.9M    +$33K
-0x24c8…23e1   debased                         9   20    10.2M   +$294K
-0xed10…d2e5   elmcap2                         8   20    12.8M    +$88K
-0x889e…09e0   BowlOfPunch                     7   20     9.3M   +$409K
+0x24c8…23e1   debased                        26   34    21.6M   +$645K
+0xed10…d2e5   elmcap2                        24   34    68.0M   +$253K
+0xc8ab…6418   ArmageddonRewardsBilly         22   34     5.1M    +$68K
+0xd1c7…1d2b   033033033                      20   34    36.3M    +$89K
 
-117 of 494 winning wallets took more than one, across 20 markets scored.
-18 closed after the trade index stops at 2026-01-05 and were not read at all.
-positions at or below 1000 tokens were never requested, so small wins are absent.
+258 of 751 winning wallets took more than one, across 34 markets scored.
+25 closed after the trade index stops at 2026-01-05. 21 were rebuilt from the
+trade log instead, and 4 were not read at all.
+the log counted only trades of $500 or more, rising to $5000 on busy markets.
+positions at or below 1000 tokens were never requested.
 someone wins every market. repeatedly is a question, not a finding.
 ```
 
 Every row carries the number of markets scored, because "won 11" means nothing without how many were on the table. The distribution is the interesting part: on a 600 market scan, most wallets that won a contested market won exactly one, and the tail thins fast. That is what makes the top of the list worth a second look, and it is also why the last line of the footer is there. Someone wins every market. This is a tally, not an allegation, and nothing in this tool reads who proposed or disputed a resolution.
 
-One subgraph query per market, so it is slower than everything else here and reads fewer markets by default. `--limit` sets how many contested markets to rebuild.
+One trade-source query per market, sometimes several when the live log has to raise its cash floor, so it is slower than everything else here and reads fewer markets by default. `--limit` sets how many contested markets to rebuild.
 
 ## The index that stopped, and what answers instead
 
@@ -359,7 +361,7 @@ Two things about that log are worth knowing before trusting anything built on it
 
 Checked against a market the index had covered, the log reproduced its winning side to within 0.2% on every wallet of the top six, in the same order.
 
-`--json` carries structured `tradeIndexCoverage`, `tradeIndexEndsAt` when the index fell short, and `tradeLog` when the log filled in, with the floor, the trade count, and whether the history itself was cut. Absent `tradeLog` beside a present `tradeIndexEndsAt` means nothing covered that market, so `winners` is omitted and MCP sets `winningSideRead: false`. An empty array is a claim, and an unread market never gets one.
+`--json` carries structured `tradeIndexCoverage`, `tradeIndexEndsAt` when the index fell short, and `tradeLog` when the log filled in, with the floor, usable and malformed trade counts, and whether the history itself was cut. Absent `tradeLog` beside a present `tradeIndexEndsAt` means nothing covered that market, so `winners` is omitted and MCP sets `winningSideRead: false`. An empty array is a claim, and an unread market never gets one.
 
 The losing side, the dispute lifecycle, the queue and the watcher read from Gamma and were never affected. They are current.
 
@@ -369,11 +371,12 @@ The losing side, the dispute lifecycle, the queue and the watcher read from Gamm
 recuse wallet 0x889e7f0464c72eb8cda1525ebc12b6aaba9d09e0
 ```
 
-This is a record of positions carried into settlement, not every trade the
-wallet ever made. Positions sold before settlement and positions at or below the
-reported floor are absent. The record comes from that same trade index. Its JSON includes a structured
-`tradeIndex` head and every renderer states the date after which trades are
-absent, so a stale position record is never presented as the wallet's whole lifetime.
+This record is rebuilt from the current trade log, not from balances, so it can
+show positions that redeemed and positions the wallet exited before settlement.
+The log pages to 20,000 trades. A busier wallet is explicitly marked partial,
+and malformed trades are counted rather than disappearing. If the live log
+refuses, the older index is the fallback and the record says where that index
+stops, so stale history is never presented as the wallet's whole lifetime.
 
 ```
 38 resolved · 29 won · 9 lost · 1 open · +$859K net
@@ -388,11 +391,11 @@ absent, so a stale position record is never presented as the wallet's whole life
 
 Disputed markets sort to the top, because that is why you would look here rather than in a general wallet tracker. The same wallet appears on both sides of the Ukraine market: that is a spread, not a contradiction, and both legs are shown.
 
-Every gain is arithmetic, not an estimate. The position size comes from cumulative trades and the settlement price comes from the condition's on-chain payout, so a wallet that redeemed and vanished from every balance-based tracker is still fully visible here.
+Every gain is arithmetic, not an estimate. The position size comes from cumulative trades and settlement comes from the condition's on-chain payout. Where that payout index is also behind, an exact closed price of 1/0 or 0.5/0.5 stands in; open and nonterminal prices are refused.
 
 `exited` is its own result, next to won and lost. It means the wallet had traded out of the position before the market settled, so it was paid nothing on the outcome and the money in that row came from trading. Counting it as a win would credit a wallet with a market it was not in when the answer landed.
 
-A wallet whose whole record sits past the index reads from the trade log instead, and its markets are priced from their closing prices where the chain payout is equally out of reach. Both are said in the caveats under the table. Before that fallback existed, a wallet holding 5.8 million tokens across two contested markets returned `no positions found for this address`.
+Before the live log became the primary wallet source, any mix of old and recent trades was silently cut at the index head, while a wallet whose whole record was recent returned `no positions found for this address`. The current source avoids both failures, and every fallback or cut is stated in the caveats under the table.
 
 Split resolutions are counted as splits. UMA does hand down 50/50 outcomes, and calling one a loss on both sides is wrong on both.
 

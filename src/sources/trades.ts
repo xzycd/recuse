@@ -29,7 +29,7 @@
  */
 
 import { getJson } from './http.js';
-import { redactMessage, safeAddress, safeHash, safeText, safeTokenId } from '../core/safe.js';
+import { redactMessage, safeAddress, safeHash, safeTokenId } from '../core/safe.js';
 
 const BASE = 'https://data-api.polymarket.com';
 
@@ -59,6 +59,9 @@ const REACHABLE = PAGE + MAX_OFFSET;
  */
 const FLOOR_LADDER = [0, 50, 500, 5_000];
 
+/** Largest amount whose six-decimal scaling stays inside the safe integer range. */
+const MAX_TOKEN_AMOUNT = Number.MAX_SAFE_INTEGER / 1_000_000;
+
 /** One fill, as this endpoint reports it. */
 export interface Trade {
   address: string;
@@ -78,10 +81,6 @@ export interface Trade {
   size: number;
   /** Dollars per token, so `size * price` is what changed hands. */
   price: number;
-  /** Unix seconds. */
-  at: number;
-  /** The name the account chose, when it chose one. */
-  name?: string;
 }
 
 export interface TradeScan {
@@ -98,9 +97,8 @@ export interface TradeScan {
    * so rather than to quietly present one.
    */
   truncated: boolean;
-  /** Unix seconds of the newest and oldest trade actually read. */
-  newestAt?: number;
-  oldestAt?: number;
+  /** Malformed rows omitted from an otherwise usable response. */
+  dropped: number;
   /** Set when nothing could be read. Never an empty list standing in for a zero. */
   failed?: string;
 }
@@ -113,24 +111,6 @@ interface RawTrade {
   size?: unknown;
   price?: unknown;
   timestamp?: unknown;
-  name?: unknown;
-  pseudonym?: unknown;
-}
-
-/**
- * A generated pseudonym is the absence of a name, not a name.
- *
- * Same rule as `dataapi.ts`, and the same reason: the fallback is the account's
- * own address with a timestamp glued on, and printing that as a chosen name
- * puts an identifier where a person should be. Kept here rather than shared
- * because the two endpoints spell the fields differently and a shared helper
- * would have to guess which.
- */
-function chosenName(raw: RawTrade, address: string): string | undefined {
-  const name = safeText(raw.name, 40).trim();
-  if (!name) return undefined;
-  if (name.toLowerCase().startsWith(address.slice(0, 10).toLowerCase())) return undefined;
-  return name;
 }
 
 /**
@@ -143,30 +123,33 @@ function chosenName(raw: RawTrade, address: string): string | undefined {
  * trade at zero, and an absent price would have passed as one.
  */
 function served(value: unknown): number | undefined {
-  if (value === null || value === undefined || value === '') return undefined;
-  const n = Number(value);
+  if (typeof value !== 'number' && typeof value !== 'string') return undefined;
+  if (typeof value === 'string' && value.trim() === '') return undefined;
+  const n = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(n) ? n : undefined;
 }
 
 /** One raw record to a trade, or nothing. A record missing an id is dropped. */
-export function toTrade(raw: RawTrade): Trade | undefined {
-  const address = safeAddress(raw.proxyWallet);
-  const tokenId = safeTokenId(raw.asset);
-  const conditionId = safeHash(raw.conditionId);
+export function toTrade(raw: unknown): Trade | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const row = raw as RawTrade;
+
+  const address = safeAddress(row.proxyWallet);
+  const tokenId = safeTokenId(row.asset);
+  const conditionId = safeHash(row.conditionId);
   if (!address || !tokenId || !conditionId) return undefined;
 
-  const size = served(raw.size);
-  const price = served(raw.price);
-  const at = served(raw.timestamp);
-  if (size === undefined || size <= 0) return undefined;
-  if (price === undefined || price < 0) return undefined;
-  if (at === undefined || at <= 0) return undefined;
+  const size = served(row.size);
+  const price = served(row.price);
+  const at = served(row.timestamp);
+  if (size === undefined || size <= 0 || size > MAX_TOKEN_AMOUNT) return undefined;
+  if (price === undefined || price < 0 || price > 1) return undefined;
+  if (at === undefined || !Number.isSafeInteger(at) || at <= 0) return undefined;
 
-  const side = raw.side === 'BUY' ? 'BUY' : raw.side === 'SELL' ? 'SELL' : undefined;
+  const side = row.side === 'BUY' ? 'BUY' : row.side === 'SELL' ? 'SELL' : undefined;
   if (!side) return undefined;
 
-  const name = chosenName(raw, address);
-  return { address, tokenId, conditionId, side, size, price, at, ...(name ? { name } : {}) };
+  return { address, tokenId, conditionId, side, size, price };
 }
 
 /**
@@ -177,15 +160,16 @@ export function toTrade(raw: RawTrade): Trade | undefined {
  * array is a refusal wearing HTTP 200, and treating it as the end of the data
  * would silently shorten the read.
  */
-async function page(query: string, timeoutMs: number): Promise<{ rows: RawTrade[]; hitCeiling: boolean }> {
-  const rows: RawTrade[] = [];
+async function page(query: string, timeoutMs: number): Promise<{ rows: unknown[]; hitCeiling: boolean }> {
+  const rows: unknown[] = [];
 
   for (let offset = 0; offset <= MAX_OFFSET; offset += PAGE) {
     const url = `${BASE}/trades?${query}&takerOnly=false&limit=${PAGE}&offset=${offset}`;
     const body = await getJson<unknown>(url, { timeoutMs });
     if (!Array.isArray(body)) throw new Error('trades endpoint returned no list');
+    if (body.length > PAGE) throw new Error('trades endpoint exceeded the requested page size');
 
-    rows.push(...(body as RawTrade[]));
+    rows.push(...body);
     if (body.length < PAGE) return { rows, hitCeiling: false };
   }
 
@@ -195,22 +179,80 @@ async function page(query: string, timeoutMs: number): Promise<{ rows: RawTrade[
   return { rows, hitCeiling: rows.length >= REACHABLE };
 }
 
-function scanFrom(rows: RawTrade[], floor: number, truncated: boolean): TradeScan {
+function scanFrom(
+  rows: unknown[],
+  floor: number,
+  truncated: boolean,
+  scope: { conditionId?: string; address?: string } = {},
+): TradeScan {
   const trades = rows.map(toTrade).filter((t): t is Trade => t !== undefined);
-  const times = trades.map((t) => t.at);
+  const dropped = rows.length - trades.length;
+
+  if (rows.length > 0 && trades.length === 0) {
+    return {
+      trades: [], floor, truncated: false, dropped,
+      failed: 'trades endpoint returned no usable trades',
+    };
+  }
+
+  if (scope.conditionId && trades.some((trade) => trade.conditionId !== scope.conditionId)) {
+    return {
+      trades: [], floor, truncated: false, dropped,
+      failed: 'trades endpoint returned a trade from another market',
+    };
+  }
+  if (scope.address && trades.some((trade) => trade.address !== scope.address)) {
+    return {
+      trades: [], floor, truncated: false, dropped,
+      failed: 'trades endpoint returned a trade from another wallet',
+    };
+  }
+  if (floor > 0 && trades.some((trade) => trade.size * trade.price + 1e-6 < floor)) {
+    return {
+      trades: [], floor, truncated: false, dropped,
+      failed: 'trades endpoint returned a trade below the requested cash floor',
+    };
+  }
+
+  let totalTokens = 0;
+  let totalCash = 0;
+  for (const trade of trades) {
+    const cash = trade.size * trade.price;
+    if (
+      totalTokens > MAX_TOKEN_AMOUNT - trade.size
+      || totalCash > MAX_TOKEN_AMOUNT - cash
+    ) {
+      return {
+        trades: [], floor, truncated: false, dropped,
+        failed: 'trades endpoint exceeded the safe numeric range',
+      };
+    }
+    totalTokens += trade.size;
+    totalCash += cash;
+  }
+
+  const conditionByToken = new Map<string, string>();
+  for (const trade of trades) {
+    const known = conditionByToken.get(trade.tokenId);
+    if (known && known !== trade.conditionId) {
+      return {
+        trades: [], floor, truncated: false, dropped,
+        failed: 'trades endpoint mapped one token to multiple markets',
+      };
+    }
+    conditionByToken.set(trade.tokenId, trade.conditionId);
+  }
 
   return {
     trades,
     floor,
     truncated,
-    ...(times.length > 0
-      ? { newestAt: Math.max(...times), oldestAt: Math.min(...times) }
-      : {}),
+    dropped,
   };
 }
 
 /**
- * Every trade on one market, largest cash first when a floor is in play.
+ * Every qualifying trade on one market.
  *
  * Escalates the floor rather than returning a truncated read, because the top
  * of a market read whole above $50 is a true statement and the most recent
@@ -223,7 +265,17 @@ export async function fetchMarketTrades(
 ): Promise<TradeScan> {
   const condition = safeHash(conditionId);
   if (!condition) {
-    return { trades: [], floor: 0, truncated: false, failed: 'malformed condition id' };
+    return { trades: [], floor: 0, truncated: false, dropped: 0, failed: 'malformed condition id' };
+  }
+
+  const validFloor = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isFinite(value)
+    && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+  if (opts.floor !== undefined && !validFloor(opts.floor)) {
+    return { trades: [], floor: 0, truncated: false, dropped: 0, failed: 'invalid trade floor' };
+  }
+  if (opts.minFloor !== undefined && !validFloor(opts.minFloor)) {
+    return { trades: [], floor: 0, truncated: false, dropped: 0, failed: 'invalid minimum trade floor' };
   }
 
   // `minFloor` starts the ladder partway up rather than pinning it, which is
@@ -235,9 +287,9 @@ export async function fetchMarketTrades(
   const ladder = opts.floor !== undefined
     ? [opts.floor]
     : FLOOR_LADDER.filter((f) => f >= (opts.minFloor ?? 0));
-  // A `minFloor` above every rung leaves nothing to try, so the top rung
-  // stands in rather than the read silently returning no trades.
-  if (ladder.length === 0) ladder.push(FLOOR_LADDER[FLOOR_LADDER.length - 1] ?? 0);
+  // A minimum above every built-in rung is still a valid request. Use the
+  // requested minimum itself rather than silently lowering it to the top rung.
+  if (ladder.length === 0) ladder.push(opts.minFloor ?? 0);
   const timeoutMs = opts.timeoutMs ?? 30_000;
 
   for (const floor of ladder) {
@@ -246,10 +298,10 @@ export async function fetchMarketTrades(
     try {
       const { rows, hitCeiling } = await page(`market=${condition}${filter}`, timeoutMs);
       const last = floor === ladder[ladder.length - 1];
-      if (!hitCeiling || last) return scanFrom(rows, floor, hitCeiling);
+      if (!hitCeiling || last) return scanFrom(rows, floor, hitCeiling, { conditionId: condition });
     } catch (err) {
       return {
-        trades: [], floor: 0, truncated: false,
+        trades: [], floor: 0, truncated: false, dropped: 0,
         failed: redactMessage((err as Error).message ?? String(err)).slice(0, 160),
       };
     }
@@ -257,7 +309,7 @@ export async function fetchMarketTrades(
 
   // Unreachable: the loop returns on the last rung either way. Present so the
   // signature does not depend on that being true forever.
-  return { trades: [], floor: 0, truncated: false, failed: 'trades could not be read' };
+  return { trades: [], floor: 0, truncated: false, dropped: 0, failed: 'trades could not be read' };
 }
 
 /**
@@ -272,14 +324,16 @@ export async function fetchWalletTrades(
   opts: { timeoutMs?: number } = {},
 ): Promise<TradeScan> {
   const who = safeAddress(address);
-  if (!who) return { trades: [], floor: 0, truncated: false, failed: 'malformed address' };
+  if (!who) {
+    return { trades: [], floor: 0, truncated: false, dropped: 0, failed: 'malformed address' };
+  }
 
   try {
     const { rows, hitCeiling } = await page(`user=${who}`, opts.timeoutMs ?? 30_000);
-    return scanFrom(rows, 0, hitCeiling);
+    return scanFrom(rows, 0, hitCeiling, { address: who });
   } catch (err) {
     return {
-      trades: [], floor: 0, truncated: false,
+      trades: [], floor: 0, truncated: false, dropped: 0,
       failed: redactMessage((err as Error).message ?? String(err)).slice(0, 160),
     };
   }

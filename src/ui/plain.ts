@@ -349,6 +349,7 @@ export function renderRegulars(
     namesAsked: number;
     namesFailed: number;
     positionsDropped: number;
+    tradesDropped: number;
   },
   style: Style,
 ): string {
@@ -376,13 +377,23 @@ export function renderRegulars(
       lines.push(dim(`${scan.empty} markets had no position above the floor.`, style));
     }
     if (scan.beyondIndex > 0) {
-      lines.push(dim(`${scan.beyondIndex} markets were beyond the trade index and not read.`, style));
+      const unread = scan.beyondIndex - scan.fromLogPastIndex;
+      lines.push(
+        ...note(
+          `${scan.beyondIndex} markets were beyond the trade index; `
+            + `${scan.fromLogPastIndex} were rebuilt from the live log and ${unread} stayed unread.`,
+          style,
+        ),
+      );
     }
     if (scan.coverageUnknown > 0) {
-      lines.push(dim(`${scan.coverageUnknown} empty readings had unknown index coverage.`, style));
+      lines.push(dim(`${scan.coverageUnknown} markets had unknown index coverage and stayed unread.`, style));
     }
     if (scan.positionsDropped > 0) {
       lines.push(dim(`${scan.positionsDropped} malformed positions were omitted.`, style));
+    }
+    if (scan.tradesDropped > 0) {
+      lines.push(dim(`${scan.tradesDropped} malformed trades were omitted.`, style));
     }
     return lines.join('\n');
   }
@@ -430,13 +441,22 @@ export function renderRegulars(
   );
 
   // Everything the tally did not cover, counted rather than implied. A market
-  // the subgraph refused is not a market nobody won.
+  // neither trade source read is not a market nobody won.
   const gaps: string[] = [];
   if (scan.marketsFailed > 0) gaps.push(`${scan.marketsFailed} could not be read`);
   if (scan.undecided > 0) gaps.push(`${scan.undecided} not settled yet`);
   if (scan.empty > 0) gaps.push(`${scan.empty} had no position above the floor and are not scored`);
   if (scan.coverageUnknown > 0) gaps.push(`${scan.coverageUnknown} had unknown index coverage`);
   if (gaps.length > 0) lines.push(dim(`${gaps.join(', ')}.`, style));
+
+  if (scan.positionsDropped + scan.tradesDropped > 0) {
+    lines.push(
+      ...note(
+        `${scan.positionsDropped} malformed index positions and ${scan.tradesDropped} malformed log trades were omitted.`,
+        style,
+      ),
+    );
+  }
 
   // The gap that used to be invisible. These markets were not quiet, they were
   // never reached, and the store reports both the same way. Now most of them
@@ -462,7 +482,9 @@ export function renderRegulars(
 
   const rescued = scan.fromLog - scan.fromLogPastIndex;
   if (rescued > 0) {
-    lines.push(...note(`${rescued} more came from the log after the index refused them.`, style));
+    lines.push(
+      ...note(`${rescued} more came from the log where the index could not provide a reliable answer.`, style),
+    );
   }
 
   if (scan.logFloorHigh > 0) {
@@ -495,7 +517,7 @@ export function renderRegulars(
     // times out. Reporting the largest as though it applied everywhere would
     // overstate what was left out of the markets that answered cheaply.
     lines.push(
-      dim(
+      ...note(
         scan.floorRaised > 0
           ? `positions at or below ${scan.floorLow} tokens were never requested, and ${scan.floorRaised} markets `
             + `needed a higher floor, up to ${scan.floorHigh}.`
@@ -506,14 +528,11 @@ export function renderRegulars(
   }
   if (scan.regulars.length > scan.namesAsked) {
     lines.push(
-      dim(`names were looked up for the top ${scan.namesAsked} rows only. below that the column is unread.`, style),
+      ...note(`names were looked up for the top ${scan.namesAsked} rows only. below that the column is unread.`, style),
     );
   }
   if (scan.namesFailed > 0) {
     lines.push(dim(`${scan.namesFailed} names could not be looked up and show as addresses.`, style));
-  }
-  if (scan.positionsDropped > 0) {
-    lines.push(dim(`${scan.positionsDropped} malformed positions were omitted.`, style));
   }
   lines.push(
     dim('from trades, not balances. these wallets redeemed and hold nothing now.', style),
@@ -552,17 +571,21 @@ export function renderWinners(a: Assessment, winners: Winner[], style: Style): s
   lines.push(rule(style));
 
   if (winners.length === 0) {
-    // Read off a field rather than inferred from the caveat text. A renderer
-    // grepping prose for the reason is a display decision made the authority on
-    // an evidence question, which this file has done once before and stopped.
+    // Read off `winners` rather than the old index boundary. A successful live
+    // log can authoritatively return no surviving positions for a market the
+    // index never reached, and calling that result unread discards the source
+    // that answered.
+    const unread = a.winners === undefined;
     lines.push(
       dim(
-        a.tradeIndexCoverage?.status === 'beyond'
+        unread && a.tradeIndexCoverage?.status === 'beyond'
           ? `the winning side was not read. the trade index stops at ${a.tradeIndexCoverage.lastTradeAt.slice(0, 10)} `
             + 'and this market closed after that.'
-          : a.tradeIndexCoverage?.status === 'unknown'
+          : unread && a.tradeIndexCoverage?.status === 'unknown'
             ? `the winning side was not read. ${a.tradeIndexCoverage.reason}.`
-          : 'no winning positions were returned for this market.',
+            : unread
+              ? 'the winning side was not read.'
+              : 'no winning positions were returned for this market.',
         style,
       ),
     );
@@ -570,11 +593,11 @@ export function renderWinners(a: Assessment, winners: Winner[], style: Style): s
     return lines.join('\n');
   }
 
-  // The subgraph has no display names, so these are joined in from the data
-  // API's activity records, which is the only place a redeemed wallet is still
-  // named. A name never replaces the address: it is chosen by the account and
-  // nothing stops one calling itself another account's address, so the anchor
-  // stays on screen and the full form stays in --json.
+  // The trade sources have no display names, so these are joined in from the
+  // data API's activity records. A name never replaces the address: it is
+  // chosen by the account and nothing stops one calling itself another
+  // account's address, so the anchor stays on screen and the full form stays in
+  // --json.
   const addrW = Math.min(44, Math.max(14, style.width - 52));
   const named = winners.some((w) => w.name);
   // 42 is a full address. Below that, or once names need room beside them,

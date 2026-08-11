@@ -30,10 +30,10 @@ function trade(over: Partial<TradeLike> = {}): TradeLike {
 
 describe('positions rebuilt from a trade log', () => {
   it('adds buys into bought and what they cost into spent', () => {
-    const [p] = positionsForToken(
+    const p = positionsForToken(
       [trade({ size: 100, price: 0.4 }), trade({ size: 50, price: 0.6 })],
       YES,
-    );
+    )[0]!;
 
     expect(p.bought).toBe(150);
     expect(p.spent).toBe(70);
@@ -45,10 +45,10 @@ describe('positions rebuilt from a trade log', () => {
     // The whole reason this quantity is worth having. A balance forgets a
     // position that was closed; a cumulative buy does not, and that is how a
     // wallet that redeemed and left the book stays visible at all.
-    const [p] = positionsForToken(
+    const p = positionsForToken(
       [trade({ size: 100, price: 0.4 }), trade({ side: 'SELL', size: 60, price: 0.9 })],
       YES,
-    );
+    )[0]!;
 
     expect(p.bought).toBe(100);
     expect(p.sold).toBe(60);
@@ -70,7 +70,7 @@ describe('positions rebuilt from a trade log', () => {
     );
 
     expect(rows).toHaveLength(1);
-    expect(rows[0].bought).toBe(10);
+    expect(rows[0]!.bought).toBe(10);
   });
 
   it('drops a wallet that only ever sold this token', () => {
@@ -104,9 +104,19 @@ describe('positions rebuilt from a trade log', () => {
     for (let i = 0; i < 1000; i++) trades.push(trade({ size: 0.1, price: 0.37 }));
     for (let i = 0; i < 1000; i++) trades.push(trade({ side: 'SELL', size: 0.1, price: 0.37 }));
 
-    const [p] = positionsForToken(trades, YES);
+    const p = positionsForWallet(trades)[0]!;
     expect(p.net).toBe(0);
     expect(p.netSpent).toBe(0);
+  });
+
+  it('drops an exited large buyer before a caller applies its row limit', () => {
+    const rows = positionsForToken([
+      trade({ address: '0xexited', size: 10_000 }),
+      trade({ address: '0xexited', side: 'SELL', size: 10_000 }),
+      trade({ address: '0xheld', size: 10 }),
+    ], YES);
+
+    expect(rows.map((row) => row.address)).toEqual(['0xheld']);
   });
 
   it('splits one wallet across the tokens it traded, and carries the market', () => {
@@ -119,8 +129,8 @@ describe('positions rebuilt from a trade log', () => {
     // The condition travels with the position because it is the only current
     // route from a wallet's trades to the markets behind them: the index maps
     // token to condition only as far back as its own head.
-    expect(rows[0].conditionId).toBe('0xbbb');
-    expect(rows[1].conditionId).toBe(CONDITION);
+    expect(rows[0]!.conditionId).toBe('0xbbb');
+    expect(rows[1]!.conditionId).toBe(CONDITION);
   });
 
   it('keeps a wallet position that nets to nothing', () => {
@@ -133,9 +143,9 @@ describe('positions rebuilt from a trade log', () => {
     ]);
 
     expect(rows).toHaveLength(1);
-    expect(rows[0].net).toBe(0);
-    expect(rows[0].bought).toBe(100);
-    expect(rows[0].netSpent).toBe(-60);
+    expect(rows[0]!.net).toBe(0);
+    expect(rows[0]!.bought).toBe(100);
+    expect(rows[0]!.netSpent).toBe(-60);
   });
 
   it('orders a wallet by what survived to settlement, not by what it bought', () => {

@@ -76,7 +76,7 @@ describe('parseArgs', () => {
   });
 
   it('keeps the winner rebuild off the radar unless asked', () => {
-    // It costs a subgraph round trip per row, so the radar does not pay for it
+    // It costs a trade-source read per row, so the radar does not pay for it
     // by default. `recuse market` does, because there it is one request.
     expect(parseArgs([]).winners).toBe(false);
     expect(parseArgs(['--winners']).winners).toBe(true);

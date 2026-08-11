@@ -78,7 +78,7 @@ const engine: Engine = {
       return assessment({
         winners: [{ address: '0xd99f', bought: 18_600_000, net: 18_600_000, spent: 18_500_000, netSpent: 18_500_000 }],
         tradeIndexEndsAt: '2026-01-05T22:05:45.000Z',
-        tradeLog: { floor: 5000, read: 5392, truncated: false },
+        tradeLog: { floor: 5000, read: 5392, truncated: false, dropped: 0 },
       });
     }
     return assessment({
@@ -122,7 +122,7 @@ const engine: Engine = {
       fromLog: 21, fromLogPastIndex: 21, logCut: 3, logFloorLow: 500, logFloorHigh: 5_000,
       floorLow: 1_000, floorHigh: 100_000, floorRaised: 6,
       wallets: 494, namesAsked: 1, namesFailed: 0,
-      positionsDropped: 2,
+      positionsDropped: 2, tradesDropped: 4,
     };
   },
 };
@@ -406,7 +406,9 @@ describe('what the payload refuses to leave out', () => {
     expect(rescued.payload.readFrom).toBe('trade log');
     // The terms travel as fields, not only as prose, because a consumer parses
     // fields and a summariser drops sentences.
-    expect(rescued.payload.tradeLog).toEqual({ floor: 5000, read: 5392, truncated: false });
+    expect(rescued.payload.tradeLog).toEqual({
+      floor: 5000, read: 5392, truncated: false, dropped: 0,
+    });
     expect(rescued.payload.limits.join(' ')).toContain('rebuilt from 5392 trades in the log');
   });
 
@@ -435,8 +437,9 @@ describe('what the payload refuses to leave out', () => {
     expect(caveats).toContain('2 contested markets could not be read');
     expect(caveats).toContain('18 markets returned no position above the floor');
     expect(caveats).toContain('4 contested markets have not settled');
-    expect(caveats).toContain('3 empty market readings had unknown trade-index coverage');
+    expect(caveats).toContain('3 markets had unknown trade-index coverage');
     expect(caveats).toContain('2 malformed winning-position rows were omitted');
+    expect(caveats).toContain('4 malformed live-log trade rows were omitted');
   });
 
   it('reports the floor range, not just the highest one it hit', async () => {

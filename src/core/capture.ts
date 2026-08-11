@@ -13,7 +13,7 @@
  */
 
 import type {
-  Concentration, Holder, Market, Regular, RepeatPlayer, Side, Winner,
+  Concentration, Holder, Market, Regular, RepeatPlayer, Side, TradeLogCoverage, Winner,
 } from '../types.js';
 
 /** Map a binary outcome index onto YES or NO without guessing on extra outcomes. */
@@ -167,7 +167,7 @@ export function tradeConcentration(
  * difference. Nothing here is modelled or inferred from a price.
  *
  * `wallets` is the denominator and travels with the rest, because this is a sum
- * over the positions that came back above the subgraph's floor, not over every
+ * over the positions that came back above the trade source's floor, not over every
  * position that existed. Presented without it, the total reads like the whole
  * winning side, which is exactly the mistake this module was written to stop.
  */
@@ -272,7 +272,7 @@ export interface WinningOutcome {
  * The mirror of `repeatPlayers`, and the reason it has to exist separately.
  * That function counts losses because balances only ever show losers. This one
  * counts wins, which balances cannot see at all, so its input is rebuilt from
- * trades by the caller, one subgraph query per market.
+ * trades by the caller, one trade-source read per market.
  *
  * `net` is the filter, not `bought`. A wallet that bought the winning side and
  * sold out before resolution was not paid, and counting it as a win would make
@@ -347,8 +347,8 @@ export function caveatsFor(opts: {
   winnerFloor?: number;
   winnersTruncated?: boolean;
   /**
-   * The trade index stops before this market closed, so nothing was read about
-   * its winning side. ISO time of the last indexed trade.
+   * The trade index stops before this market closed. The live log may still
+   * answer its winning side. ISO time of the last indexed trade.
    */
   beyondIndex?: string;
   /** Why index coverage could not be established for an empty result. */
@@ -359,7 +359,7 @@ export function caveatsFor(opts: {
    * position in tokens, so it cannot share a field with `winnerFloor` however
    * similar the two lines read.
    */
-  tradeLog?: { floor: number; read: number; truncated: boolean };
+  tradeLog?: TradeLogCoverage;
 }): string[] {
   const out: string[] = [];
 
@@ -407,6 +407,9 @@ export function caveatsFor(opts: {
           `the trade log was cut at the ${opts.tradeLog.read} most recent trades, `
             + 'so these totals are partial rather than cumulative',
         );
+      }
+      if (opts.tradeLog.dropped > 0) {
+        out.push(`${opts.tradeLog.dropped} malformed trades were omitted from the winning side`);
       }
       if (opts.winnersTruncated) {
         out.push('more winning positions were rebuilt than were requested');

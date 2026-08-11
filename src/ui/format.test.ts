@@ -201,7 +201,7 @@ describe('wrapping a sentence to the terminal', () => {
   it('cuts a single word too long to fit rather than overflowing', () => {
     // The only things this long here are addresses and hashes, and one of
     // those wrapped across two lines reads as two identifiers.
-    const [line] = wrap('0x950ea3d54a52dca7ec54e7a0338812450268f8e5', 12);
+    const line = wrap('0x950ea3d54a52dca7ec54e7a0338812450268f8e5', 12)[0]!;
     expect(widthOf(line)).toBe(12);
     expect(line.endsWith('\u2026')).toBe(true);
   });

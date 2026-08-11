@@ -671,7 +671,7 @@ async function runPlayers(args: Args): Promise<number> {
 /**
  * The winning side, across markets rather than within one.
  *
- * Costs a subgraph query per market, so the default scan is smaller than the
+ * Costs a trade-source query per market, so the default scan is smaller than the
  * radar's and the spinner counts markets rather than rows. `players` is the
  * cheap mirror of this and reads balances instead.
  */

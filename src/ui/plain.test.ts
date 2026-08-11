@@ -43,6 +43,20 @@ describe('winner failure rendering', () => {
     expect(output).toContain('head could not be read');
     expect(output).not.toContain('no winning positions were returned');
   });
+
+  it('treats an empty live-log result as read even when the index was behind', () => {
+    const output = renderWinners(assessment({
+      winners: [],
+      tradeIndexCoverage: {
+        status: 'beyond', lastTradeAt: '2026-01-05T22:05:45.000Z',
+      },
+      tradeIndexEndsAt: '2026-01-05T22:05:45.000Z',
+      tradeLog: { floor: 500, read: 12, truncated: false, dropped: 0 },
+    }), [], style);
+
+    expect(output).toContain('no winning positions were returned');
+    expect(output).not.toContain('the winning side was not read');
+  });
 });
 
 describe('regular coverage rendering', () => {
@@ -50,13 +64,16 @@ describe('regular coverage rendering', () => {
     const output = renderRegulars({
       regulars: [], marketsRead: 0, marketsScored: 0, marketsFailed: 1,
       undecided: 2, empty: 3, beyondIndex: 4, coverageUnknown: 5,
+      indexHead: '2026-01-05T22:05:45.000Z',
+      fromLog: 0, fromLogPastIndex: 0, logCut: 0, logFloorLow: 0, logFloorHigh: 0,
       floorLow: 0, floorHigh: 0, floorRaised: 0, wallets: 0,
-      namesAsked: 0, namesFailed: 0, positionsDropped: 6,
+      namesAsked: 0, namesFailed: 0, positionsDropped: 6, tradesDropped: 7,
     }, style);
     expect(output).toContain('1 markets could not be read');
     expect(output).toContain('3 markets had no position');
     expect(output).toContain('4 markets were beyond');
-    expect(output).toContain('5 empty readings had unknown');
+    expect(output).toContain('5 markets had unknown');
     expect(output).toContain('6 malformed positions');
+    expect(output).toContain('7 malformed trades');
   });
 });

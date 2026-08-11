@@ -173,6 +173,8 @@ describe('a payout read off closing prices', () => {
     // that is still live.
     expect(payoutFromPrices(settled([0.97, 0.03]))).toBeUndefined();
     expect(payoutFromPrices(settled([0.6, 0.4]))).toBeUndefined();
+    expect(payoutFromPrices(market({ closed: false, active: true, outcomePrices: [1, 0] })))
+      .toBeUndefined();
   });
 
   it('refuses prices that do not divide one dollar between them', () => {
@@ -188,10 +190,11 @@ describe('a position closed before the market settled', () => {
     // survivors only. The trade log has no such filter, and a wallet that
     // flipped its whole position is ordinary.
     const m = market({ outcomePrices: [1, 0] });
+    const token = m.tokenIds[0]!;
     const ledger = buildLedger({
       address: '0xaaa',
-      positions: [{ tokenId: m.tokenIds[0], bought: 1000, net: 0, netSpent: -400 }],
-      payouts: new Map([[m.tokenIds[0], { conditionId: m.conditionId, numerators: [1, 0], denominator: 1 }]]),
+      positions: [{ tokenId: token, bought: 1000, net: 0, netSpent: -400 }],
+      payouts: new Map([[token, { conditionId: m.conditionId, numerators: [1, 0], denominator: 1 }]]),
       markets: new Map([[m.conditionId, m]]),
     });
 

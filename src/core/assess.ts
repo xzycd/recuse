@@ -30,7 +30,7 @@ export interface AssessOptions {
   topN?: number;
   /**
    * Rebuild the winning side from trades. Off by default on the radar, where it
-   * would add a subgraph round trip per row, and on for a single market, where
+   * would add a trade-source read per row, and on for a single market, where
    * one extra request is worth the half of the market it recovers.
    */
   winners?: boolean;
@@ -129,7 +129,7 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
   let beyondIndex: string | undefined;
   let coverageUnknown: string | undefined;
   let tradeIndexCoverage: TradeIndexCoverage | undefined;
-  let tradeLog: { floor: number; read: number; truncated: boolean } | undefined;
+  let tradeLog: Assessment['tradeLog'];
   let winnersDropped = 0;
   let tradesRead = false;
 
@@ -170,6 +170,7 @@ export async function assess(market: Market, opts: AssessOptions = {}): Promise<
           floor: log.floor,
           read: log.trades.length,
           truncated: log.truncated,
+          dropped: log.dropped,
         };
         winnerFloor = 0;
         winnersTruncated = rebuilt.length > winnerLimit;
@@ -336,20 +337,20 @@ export interface RegularScan {
    * Markets that returned at least one winning position, and the denominator
    * for `wins`.
    *
-   * Not `marketsRead`. A market where the subgraph answered but no position
+   * Not `marketsRead`. A market where a trade source answered but no position
    * cleared the floor is one nobody can be credited with winning, so counting
    * it against every wallet understates all of them equally and invents a
    * denominator that was never on offer.
    */
   marketsScored: number;
-  /** Markets the subgraph refused. Not counted as markets with no winners. */
+  /** Markets neither trade source could read. Not counted as markets with no winners. */
   marketsFailed: number;
   /** Markets still live, so there is no winning side to rebuild yet. */
   undecided: number;
   /** Read, but nothing cleared the floor. Genuinely empty, and covered. */
   empty: number;
   /**
-   * Markets that closed after the trade index stops, so nothing was read.
+   * Markets that closed after the trade index stops. The live log may answer.
    *
    * Kept apart from `empty` because the store reports the two identically, and
    * folding them together is how two thirds of the contested set came to be
@@ -400,18 +401,20 @@ export interface RegularScan {
   namesFailed: number;
   /** Malformed position rows omitted across the markets that answered. */
   positionsDropped: number;
+  /** Malformed trade rows omitted across live-log fallbacks that answered. */
+  tradesDropped: number;
 }
 
 /**
  * Who keeps ending up on the winning side of contested markets.
  *
- * One subgraph query per market, which is why this is its own command rather
- * than a column on the radar. `tallyRepeatPlayers` above is the cheap mirror of
- * this: losers sit in balances and cost one holder lookup, winners redeemed and
- * have to be rebuilt from trades.
+ * One trade-source query per market, which is why this is its own command
+ * rather than a column on the radar. `tallyRepeatPlayers` above is the cheap
+ * mirror of this: losers sit in balances and cost one holder lookup, winners
+ * redeemed and have to be rebuilt from trades.
  *
  * Every count that could be mistaken for a zero is returned separately. A
- * market the subgraph timed out on is not a market where nobody won, and a
+ * market both trade sources failed on is not a market where nobody won, and a
  * market still trading has no winning side at all yet. Collapsing either into
  * `marketsRead` would put a confident denominator under a number that never
  * covered it.
@@ -423,7 +426,15 @@ export async function tallyRegulars(
 ): Promise<RegularScan> {
   // The name limit matches the rows the table draws, so every visible row is a
   // row a request was made for and `(anon)` never covers for "did not ask".
-  const { winnerLimit = 50, minWins = 2, nameLimit = 40 } = opts;
+  const winnerLimit = Number.isFinite(opts.winnerLimit)
+    ? Math.min(100, Math.max(1, Math.floor(opts.winnerLimit!)))
+    : 50;
+  const minWins = Number.isFinite(opts.minWins)
+    ? Math.min(10_000, Math.max(1, Math.floor(opts.minWins!)))
+    : 2;
+  const nameLimit = Number.isFinite(opts.nameLimit)
+    ? Math.min(100, Math.max(0, Math.floor(opts.nameLimit!)))
+    : 40;
 
   const outcomes: WinningOutcome[] = [];
   const wallets = new Set<string>();
@@ -435,6 +446,7 @@ export async function tallyRegulars(
   let beyond = 0;
   let coverageUnknown = 0;
   let positionsDropped = 0;
+  let tradesDropped = 0;
   let fromLog = 0;
   let fromLogPastIndex = 0;
   let logCut = 0;
@@ -490,6 +502,7 @@ export async function tallyRegulars(
           address: p.address, bought: p.bought, net: p.net, spent: p.spent, netSpent: p.netSpent,
         }));
         logFloors.push(log.floor);
+        tradesDropped += log.dropped;
         if (log.truncated) logCut += 1;
         fromLog += 1;
         if (past) fromLogPastIndex += 1;
@@ -554,15 +567,17 @@ export async function tallyRegulars(
     namesAsked: named ? asked.length : 0,
     namesFailed: named?.failed ?? 0,
     positionsDropped,
+    tradesDropped,
   };
 }
 
 /**
  * Every position one wallet carried into settlement, joined across three sources.
  *
- * The index is asked first, because where it reaches it answers in full. Where
- * it does not, and that is now most of the last seven months, the trade log
- * answers instead and the ledger says which one it stands on.
+ * The current trade log is primary because even a nonempty index result can
+ * omit every market after its old head. The index is read in parallel and is
+ * used only when the live log refuses or contradicts it with a complete empty
+ * history. The ledger says which source it stands on.
  *
  * Both routes end at Gamma for the question text, the dispute history and,
  * critically, the token-to-outcome mapping. Neither trade source carries a
@@ -579,36 +594,67 @@ export async function assessWallet(
   const limit = Number.isFinite(opts.limit)
     ? Math.min(200, Math.max(1, Math.floor(opts.limit!)))
     : 60;
-  const scan = await fetchWalletPositions(who, { ...opts, limit });
+  if (opts.floor !== undefined && (
+    !Number.isFinite(opts.floor) || opts.floor < 0 || opts.floor > Number.MAX_SAFE_INTEGER
+  )) {
+    throw new Error('wallet position floor must be a nonnegative number');
+  }
+  const requestedFloor = opts.floor === undefined ? undefined : Math.floor(opts.floor);
+  const positionOpts = {
+    ...opts,
+    limit,
+    ...(requestedFloor === undefined ? {} : { floor: requestedFloor }),
+  };
+  const [scan, log] = await Promise.all([
+    fetchWalletPositions(who, positionOpts),
+    fetchWalletTrades(who),
+  ]);
 
   let positions: { tokenId: string; conditionId?: string; net: number; netSpent: number; bought: number }[]
-    = scan.positions;
-  let floor = scan.floor;
-  let truncated = scan.truncated;
-  let fromLog: { read: number; truncated: boolean } | undefined;
-  let readFailed = scan.failed;
+    = [];
+  let floor = 0;
+  let truncated = false;
+  let fromLog: {
+    read: number; truncated: boolean; dropped: number; unreconstructable: number;
+  } | undefined;
+  let liveLogFallbackReason: string | undefined;
 
-  // Nothing came back, either because the index stops short of everything this
-  // wallet did or because the store refused. Both look like a wallet that never
-  // traded, which is exactly the answer a live wallet holding 5.8 million
-  // tokens was getting.
-  if (positions.length === 0) {
-    const log = await fetchWalletTrades(who);
-    if (!log.failed) {
-      const rebuilt = positionsForWallet(log.trades);
-      readFailed = undefined;
-      positions = rebuilt.slice(0, limit);
-      floor = 0;
-      truncated = rebuilt.length > limit;
-      fromLog = { read: log.trades.length, truncated: log.truncated };
+  // The live log is primary for a wallet. A non-empty index record can still
+  // be seven months stale, which silently loses newer markets, and it can never
+  // show positions the wallet exited. The old index remains a useful fallback
+  // when the current source refuses, but its boundary is stated on the record.
+  if (!log.failed) {
+    const rebuilt = positionsForWallet(log.trades);
+    if (!log.truncated && rebuilt.length === 0 && scan.positions.length > 0 && !scan.failed) {
+      positions = scan.positions;
+      floor = scan.floor;
+      truncated = scan.truncated;
+      liveLogFallbackReason = 'a complete live trade log returned an empty history that contradicted the index';
     } else {
-      readFailed = readFailed
-        ? `trade index failed: ${readFailed}; trade log failed: ${log.failed}`
-        : `trade log failed: ${log.failed}`;
+      const reconstructable = rebuilt.filter((position) => position.net >= 0);
+      const usable = requestedFloor && requestedFloor > 0
+        ? reconstructable.filter((position) => position.net > requestedFloor)
+        : reconstructable;
+      const unreconstructable = rebuilt.length - reconstructable.length;
+      positions = usable.slice(0, limit);
+      floor = requestedFloor ?? 0;
+      truncated = usable.length > limit;
+      fromLog = {
+        read: log.trades.length,
+        truncated: log.truncated,
+        dropped: log.dropped,
+        unreconstructable,
+      };
     }
-  }
-
-  if (readFailed) {
+  } else if (!scan.failed && scan.positions.length > 0) {
+    positions = scan.positions;
+    floor = scan.floor;
+    truncated = scan.truncated;
+    liveLogFallbackReason = log.failed;
+  } else {
+    const readFailed = scan.failed
+      ? `trade index failed: ${scan.failed}; trade log failed: ${log.failed}`
+      : `trade log failed: ${log.failed}; the stale index returned no positions`;
     return {
       address: who, entries: [], won: 0, lost: 0, split: 0, exited: 0, open: 0,
       gain: 0, contestedGain: 0, contested: 0,
@@ -640,13 +686,15 @@ export async function assessWallet(
   // answered with nothing rather than with a resolution.
   let priced = 0;
   for (const position of positions) {
-    if (payoutScan.byToken.has(position.tokenId)) continue;
-    const market = position.conditionId ? markets.get(position.conditionId) : undefined;
+    const indexed = payoutScan.byToken.get(position.tokenId);
+    if (indexed?.numerators && indexed.denominator) continue;
+    const conditionId = position.conditionId ?? indexed?.conditionId;
+    const market = conditionId ? markets.get(conditionId) : undefined;
     const fallback = market ? payoutFromPrices(market) : undefined;
     if (fallback) {
       payoutScan.byToken.set(position.tokenId, fallback);
       priced += 1;
-    } else if (market) {
+    } else if (market && !indexed) {
       // Still needs the condition, or the position drops out of the ledger
       // entirely rather than showing up as the open position it is.
       payoutScan.byToken.set(position.tokenId, { conditionId: market.conditionId });
@@ -689,13 +737,25 @@ export async function assessWallet(
   }
   if (fromLog) {
     ledger.caveats.unshift(
-      `the trade index did not provide a current record for this wallet, so this is rebuilt from ${fromLog.read} trades in the log`,
+      `this current wallet record was rebuilt from ${fromLog.read} trades in the live log`,
     );
     if (fromLog.truncated) {
       ledger.caveats.push(
         `only the ${fromLog.read} most recent trades were reachable, so older positions are missing`,
       );
     }
+    if (fromLog.dropped > 0) {
+      ledger.caveats.push(`${fromLog.dropped} malformed live-log trades were omitted`);
+    }
+    if (fromLog.unreconstructable > 0) {
+      ledger.caveats.push(
+        `${fromLog.unreconstructable} token positions had more sells than recorded buys and were not counted`,
+      );
+    }
+  } else if (liveLogFallbackReason) {
+    ledger.caveats.unshift(
+      `the live trade log was not used: ${liveLogFallbackReason}; this record uses the older trade index`,
+    );
   }
   if (priced > 0) {
     ledger.caveats.push(
@@ -718,7 +778,7 @@ export async function assessWallet(
   if (truncated) {
     ledger.caveats.push('more positions exist than were requested, use --limit');
   }
-  if (scan.dropped > 0) {
+  if (!fromLog && scan.dropped > 0) {
     ledger.caveats.push(`${scan.dropped} malformed positions were omitted`);
   }
 
